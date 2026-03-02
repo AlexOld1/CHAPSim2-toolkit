@@ -66,6 +66,9 @@ class Config:
     norm_y_to_y_plus: bool
     norm_temp_by_ref_temp: bool
 
+    # 2D slice options
+    slice_label: str
+
     # Plotting options
     half_channel_plot: bool
     linear_y_scale: bool
@@ -119,6 +122,7 @@ class Config:
             norm_ux_by_u_tau=getattr(config_module, 'norm_ux_by_u_tau', False),
             norm_y_to_y_plus=getattr(config_module, 'norm_y_to_y_plus', False),
             norm_temp_by_ref_temp=getattr(config_module, 'norm_temp_by_ref_temp', False),
+            slice_label=getattr(config_module, 'slice_label', ''),
             half_channel_plot=getattr(config_module, 'half_channel_plot', False),
             linear_y_scale=getattr(config_module, 'linear_y_scale', True),
             log_y_scale=getattr(config_module, 'log_y_scale', False),
@@ -280,7 +284,8 @@ def create_data_loader(config: Config, data_types: List[str] = None):
             config.timesteps,
             data_types=data_types,
             average_z=config.average_z_direction,
-            average_x=config.average_x_direction
+            average_x=config.average_x_direction,
+            slice_label=config.slice_label if config.slice_label else None
         )
     elif fmt in ['dat', 'text']:
         print("Using text (.dat) data loader...")
@@ -355,13 +360,15 @@ class TurbulenceXDMFData:
     """Manages all data from .xdmf files -- stores native numpy arrays."""
 
     def __init__(self, folder_path: str, cases: List[str], timesteps: List[str],
-                 data_types: List[str] = None, average_z: bool = True, average_x: bool = False):
+                 data_types: List[str] = None, average_z: bool = True, average_x: bool = False,
+                 slice_label: str = None):
         self.folder_path = folder_path
         self.cases = cases
         self.timesteps = timesteps
         self.data_types = data_types
         self.average_z = average_z
         self.average_x = average_x
+        self.slice_label = slice_label
         # Nested structure: {case_timestep: {variable: array}}
         self.data: Dict[str, Dict[str, np.ndarray]] = {}
         self.grid_info: Dict = {}
@@ -379,7 +386,10 @@ class TurbulenceXDMFData:
         key = f"{case}_{timestep}"
 
         # Get file paths for this case/timestep
-        file_names = ut.visu_file_paths(self.folder_path, case, timestep)
+        if self.slice_label:
+            file_names = ut.visu_slice_file_paths(self.folder_path, case, timestep, self.slice_label)
+        else:
+            file_names = ut.visu_file_paths(self.folder_path, case, timestep)
 
         # Check which files exist
         existing_files = [f for f in file_names if os.path.isfile(f)]

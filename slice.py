@@ -372,16 +372,58 @@ def get_user_input():
 
     timestep = input("Timestep: ").strip()
 
+    # Detect available 2D slice files
+    available_slices = ut.find_available_slices(visu_folder, timestep)
+
     # Select data type
     print("\nData types:")
-    print("  1. inst   - Instantaneous data")
-    print("  2. t_avg  - Time-averaged data")
+    print("  1. inst     - Instantaneous 3D data")
+    print("  2. t_avg    - Time-averaged 3D data")
+    if available_slices:
+        print(f"  3. 2d_slice - Pre-sliced 2D data (available: {', '.join(available_slices)})")
     data_type_choice = input("Data type [1]: ").strip()
 
     data_type_map = {'1': 'inst', '2': 't_avg',
                      'inst': 'inst', 't_avg': 't_avg',
                      '': 'inst'}
-    data_type = data_type_map.get(data_type_choice, 'inst')
+
+    slice_label = None
+    is_2d_slice = False
+
+    if data_type_choice == '3' or data_type_choice == '2d_slice':
+        if not available_slices:
+            print("No 2D slice files found for this timestep.")
+            return None
+        is_2d_slice = True
+
+        # Let user pick a slice label
+        print("\nAvailable 2D slices:")
+        for i, label in enumerate(available_slices):
+            info = ut.slice_axis_info(label)
+            plane_desc = f"{info['plane']} plane" if info else label
+            print(f"  {i+1}. {label:6s} - {plane_desc} (constant {info['normal_dir']} at index {info['normal_index']})")
+        slice_choice = input(f"Select slice [1]: ").strip()
+        try:
+            idx = int(slice_choice) - 1 if slice_choice else 0
+            slice_label = available_slices[max(0, min(idx, len(available_slices) - 1))]
+        except ValueError:
+            # Try matching label directly
+            if slice_choice in available_slices:
+                slice_label = slice_choice
+            else:
+                slice_label = available_slices[0]
+        print(f"  -> Selected slice: {slice_label}")
+
+        # Select sub-type for 2D slices
+        print("\n2D slice data types:")
+        print("  1. inst   - Instantaneous")
+        print("  2. t_avg  - Time-averaged")
+        sub_type_choice = input("Sub-type [1]: ").strip()
+        sub_type_map = {'1': 'inst', '2': 't_avg', '': 'inst',
+                        'inst': 'inst', 't_avg': 't_avg'}
+        data_type = sub_type_map.get(sub_type_choice, 'inst')
+    else:
+        data_type = data_type_map.get(data_type_choice, 'inst')
 
     # Select physics type
     print("\nPhysics types:")
@@ -395,11 +437,18 @@ def get_user_input():
                    '': 'flow'}
     physics_type = physics_map.get(physics_choice, 'flow')
 
-    # Check if the selected file exists
-    if data_type == 'inst':
-        xdmf_filename = f"domain1_{physics_type}_{timestep}.xdmf"
+    # Build filename based on data type
+    if is_2d_slice:
+        if data_type == 'inst':
+            xdmf_filename = f"domain1_{physics_type}_{slice_label}_{timestep}.xdmf"
+        else:
+            xdmf_filename = f"domain1_{data_type}_{physics_type}_{slice_label}_{timestep}.xdmf"
     else:
-        xdmf_filename = f"domain1_{data_type}_{physics_type}_{timestep}.xdmf"
+        if data_type == 'inst':
+            xdmf_filename = f"domain1_{physics_type}_{timestep}.xdmf"
+        else:
+            xdmf_filename = f"domain1_{data_type}_{physics_type}_{timestep}.xdmf"
+
     xdmf_path = os.path.join(visu_folder, xdmf_filename)
     if not os.path.isfile(xdmf_path):
         print(f"Error: File not found: {xdmf_filename}")
@@ -416,6 +465,8 @@ def get_user_input():
         'data_type': data_type,
         'physics_type': physics_type,
         'xdmf_path': xdmf_path,
+        'is_2d_slice': is_2d_slice,
+        'slice_label': slice_label,
     }
 
 
@@ -456,6 +507,121 @@ def parse_variable_selection(var_choice, variables):
             selected.append(part)
 
     return selected
+
+
+def get_2d_plot_config(var_metadata, grid_info, slice_label):
+    """Get plot configuration for already-2D slice data."""
+
+    # List available variables (2D)
+    all_variables = sorted(var_metadata.keys())
+    variables = [v for v in all_variables if len(var_metadata[v].get('shape', ())) == 2]
+
+    if not variables:
+        print("Error: No 2D variables found in dataset.")
+        return None
+
+    print(f"\nAvailable 2D variables ({len(variables)}):")
+    for i, var in enumerate(variables):
+        shape = var_metadata[var]['shape']
+        print(f"  {i+1:2d}. {var:20s} shape: {shape}")
+
+    print("\nSelection options:")
+    print("  - Single e.g: 1 or variable_name")
+    print("  - Multiple e.g: 1,3,5 or 1 3 5")
+    print("  - Range e.g: 1-5")
+    print("  - All: all")
+
+    var_choice = input("\nVariables to plot: ").strip()
+    selected_vars = parse_variable_selection(var_choice, variables)
+
+    if not selected_vars:
+        print("No valid variables selected, using first variable")
+        selected_vars = [variables[0]]
+
+    print(f"\nSelected {len(selected_vars)} variable(s): {selected_vars}")
+
+    # Get slice axis info
+    axis_info = ut.slice_axis_info(slice_label)
+
+    # X-direction cropping (optional, for xz and xy planes)
+    x_crop = None
+    if axis_info and axis_info['plane'] in ['xz', 'xy']:
+        grid_x = grid_info.get('grid_x', None)
+        if grid_x is not None and len(grid_x) > 1:
+            print(f"\nX-direction cropping (optional):")
+            print(f"  Full x range: {grid_x.min():.4f} to {grid_x.max():.4f}")
+            crop_input = input("Crop x range? (y/n) [n]: ").strip().lower()
+            if crop_input == 'y':
+                x_min_input = input(f"  x_min [{grid_x.min():.4f}]: ").strip()
+                x_max_input = input(f"  x_max [{grid_x.max():.4f}]: ").strip()
+                x_min = float(x_min_input) if x_min_input else grid_x.min()
+                x_max = float(x_max_input) if x_max_input else grid_x.max()
+                x_crop = (x_min, x_max)
+                print(f"  -> Cropping x from {x_min:.4f} to {x_max:.4f}")
+
+    # Colormap selection
+    print("\nColormaps: viridis, plasma, inferno, magma, cividis, RdBu_r, coolwarm, jet")
+    cmap = input("Colormap [viridis]: ").strip()
+    if not cmap:
+        cmap = 'viridis'
+
+    # Color scale options
+    print("\nColor scale options:")
+    print("  1. Auto (min to max)")
+    print("  2. Symmetric around zero")
+    print("  3. Custom range")
+    scale_choice = input("Scale option [1]: ").strip()
+
+    symmetric = False
+    vmin, vmax = None, None
+
+    if scale_choice == '2':
+        symmetric = True
+    elif scale_choice == '3':
+        vmin_input = input("vmin: ").strip()
+        vmax_input = input("vmax: ").strip()
+        vmin = float(vmin_input) if vmin_input else None
+        vmax = float(vmax_input) if vmax_input else None
+
+    # Combined plot option
+    combined_plot = False
+    shared_scale = False
+    if len(selected_vars) > 1:
+        combined_input = input("\nCombine all variables in one figure? (y/n) [n]: ").strip().lower()
+        combined_plot = combined_input == 'y'
+        if combined_plot:
+            shared_input = input("Use same colour scale for all plots? (y/n) [n]: ").strip().lower()
+            shared_scale = shared_input == 'y'
+
+    # Save options
+    save_input = input("\nSave figures? (y/n) [y]: ").strip().lower()
+    save_fig = save_input != 'n'
+
+    save_dir = None
+    if save_fig:
+        save_dir = input(f"Save directory [{os.getcwd()}]: ").strip()
+        if not save_dir:
+            save_dir = os.getcwd()
+        save_dir = os.path.expanduser(os.path.expandvars(save_dir))
+
+    display_input = input("Display figures? (y/n) [y]: ").strip().lower()
+    display = display_input != 'n'
+
+    return {
+        'variables': selected_vars,
+        'plane': axis_info['plane'] if axis_info else 'xz',
+        'index': None,  # Not applicable for pre-sliced data
+        'cmap': cmap,
+        'symmetric': symmetric,
+        'vmin': vmin,
+        'vmax': vmax,
+        'save_dir': save_dir,
+        'save_fig': save_fig,
+        'display': display,
+        'combined_plot': combined_plot,
+        'shared_scale': shared_scale,
+        'x_crop': x_crop,
+    }
 
 
 def get_slice_config(var_metadata, grid_info):
@@ -647,8 +813,14 @@ def main():
         dims = grid_info.get('cell_dimensions', grid_info.get('node_dimensions', 'unknown'))
         print(f"Grid dimensions: {dims}")
 
-    # Step 2: Get slice configuration (variable selection, plane, etc.)
-    slice_config = get_slice_config(var_metadata, grid_info)
+    is_2d_slice = config.get('is_2d_slice', False)
+    slice_label = config.get('slice_label', None)
+
+    # Step 2: Get slice/plot configuration
+    if is_2d_slice:
+        slice_config = get_2d_plot_config(var_metadata, grid_info, slice_label)
+    else:
+        slice_config = get_slice_config(var_metadata, grid_info)
     if slice_config is None:
         return
 
@@ -661,7 +833,7 @@ def main():
         var_metadata,
         slice_config['variables'],
         grid_info=grid_info,
-        output_dim=3
+        output_dim=3 if not is_2d_slice else 2
     )
 
     if not data:
@@ -674,87 +846,142 @@ def main():
     print(f"Generating {len(slice_config['variables'])} slice(s)...")
     print("=" * 60)
 
-    # Get slice location info (same for all variables)
-    slice_loc = get_slice_location(grid_info, slice_config['plane'], slice_config['index'])
-    if slice_config['plane'] == 'xy':
-        slice_info = f"(z = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(z index = {slice_loc})"
-    elif slice_config['plane'] == 'xz':
-        slice_info = f"(y = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(y index = {slice_loc})"
-    else:
-        slice_info = f"(x = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(x index = {slice_loc})"
+    if is_2d_slice:
+        # Data is already 2D — determine axis info from slice label
+        axis_info = ut.slice_axis_info(slice_label)
+        axis_labels = axis_info['axis_labels'] if axis_info else ('$x$', '$y$')
+        coord1_key, coord2_key = axis_info['coord_keys'] if axis_info else ('grid_x', 'grid_y')
+        slice_info = f"({axis_info['normal_dir']} index = {axis_info['normal_index']})" if axis_info else ""
 
-    if slice_config['combined_plot']:
-        # Extract all slices first
-        slices_data = []
-        coord1, coord2, axis_labels = None, None, None
+        # Get coordinate arrays from grid_info
+        sample_var = data[slice_config['variables'][0]]
+        coord1 = grid_info.get(coord1_key, np.arange(sample_var.shape[1]))
+        coord2 = grid_info.get(coord2_key, np.arange(sample_var.shape[0]))
 
-        for variable in tqdm(slice_config['variables'], desc="Extracting", unit="var"):
-            var_data = data[variable]
-            slice_data, coord1, coord2, axis_labels = extract_slice(
-                var_data,
-                slice_config['plane'],
-                slice_config['index'],
-                grid_info
-            )
+        if slice_config['combined_plot']:
+            slices_data = []
+            for variable in tqdm(slice_config['variables'], desc="Preparing", unit="var"):
+                slice_data = data[variable]
+                # Squeeze any singleton dimensions
+                slice_data = np.squeeze(slice_data)
+                if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
+                    slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                slices_data.append((variable, slice_data))
+                print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
 
-            # Apply x-direction cropping if specified (only for xy and xz planes)
-            if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                slice_data, coord1_cropped = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
-                coord1 = coord1_cropped
-
-            slices_data.append((variable, slice_data))
-
-            # Print statistics
-            print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
-
-        # Build save path for combined figure
-        save_path = None
-        if slice_config['save_fig'] and slice_config['save_dir']:
-            filename = f"combined_{slice_config['plane']}_slice.png"
-            save_path = os.path.join(slice_config['save_dir'], filename)
-
-        # Plot combined figure
-        plot_combined_slices(
-            slices_data, coord1, coord2, axis_labels, slice_info,
-            cmap=slice_config['cmap'],
-            symmetric=slice_config['symmetric'],
-            shared_scale=slice_config['shared_scale'],
-            save_path=save_path,
-            display=slice_config['display']
-        )
-    else:
-        # Process each variable separately
-        for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
-            var_data = data[variable]
-            slice_data, coord1, coord2, axis_labels = extract_slice(
-                var_data,
-                slice_config['plane'],
-                slice_config['index'],
-                grid_info
-            )
-
-            # Apply x-direction cropping if specified (only for xy and xz planes)
-            if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
-
-            # Build save path for this variable
             save_path = None
             if slice_config['save_fig'] and slice_config['save_dir']:
-                filename = f"{variable}_{slice_config['plane']}_slice.png"
+                filename = f"combined_{slice_label}_slice.png"
                 save_path = os.path.join(slice_config['save_dir'], filename)
 
-            # Plot
-            plot_slice(
-                slice_data, coord1, coord2, axis_labels,
-                variable,
+            plot_combined_slices(
+                slices_data, coord1, coord2, axis_labels, slice_info,
+                cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
+                shared_scale=slice_config['shared_scale'],
+                save_path=save_path, display=slice_config['display']
+            )
+        else:
+            for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
+                slice_data = np.squeeze(data[variable])
+                c1, c2 = coord1, coord2
+                if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
+                    slice_data, c1 = apply_x_crop(slice_data, c1, slice_config['x_crop'])
+
+                save_path = None
+                if slice_config['save_fig'] and slice_config['save_dir']:
+                    filename = f"{variable}_{slice_label}_slice.png"
+                    save_path = os.path.join(slice_config['save_dir'], filename)
+
+                plot_slice(
+                    slice_data, c1, c2, axis_labels, variable,
+                    cmap=slice_config['cmap'],
+                    vmin=slice_config['vmin'], vmax=slice_config['vmax'],
+                    symmetric=slice_config['symmetric'],
+                    slice_info=slice_info, save_path=save_path,
+                    display=slice_config['display']
+                )
+    else:
+        # 3D data — extract slice as before
+        slice_loc = get_slice_location(grid_info, slice_config['plane'], slice_config['index'])
+        if slice_config['plane'] == 'xy':
+            slice_info = f"(z = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(z index = {slice_loc})"
+        elif slice_config['plane'] == 'xz':
+            slice_info = f"(y = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(y index = {slice_loc})"
+        else:
+            slice_info = f"(x = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(x index = {slice_loc})"
+
+        if slice_config['combined_plot']:
+            # Extract all slices first
+            slices_data = []
+            coord1, coord2, axis_labels = None, None, None
+
+            for variable in tqdm(slice_config['variables'], desc="Extracting", unit="var"):
+                var_data = data[variable]
+                slice_data, coord1, coord2, axis_labels = extract_slice(
+                    var_data,
+                    slice_config['plane'],
+                    slice_config['index'],
+                    grid_info
+                )
+
+                # Apply x-direction cropping if specified (only for xy and xz planes)
+                if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
+                    slice_data, coord1_cropped = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                    coord1 = coord1_cropped
+
+                slices_data.append((variable, slice_data))
+
+                # Print statistics
+                print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
+
+            # Build save path for combined figure
+            save_path = None
+            if slice_config['save_fig'] and slice_config['save_dir']:
+                filename = f"combined_{slice_config['plane']}_slice.png"
+                save_path = os.path.join(slice_config['save_dir'], filename)
+
+            # Plot combined figure
+            plot_combined_slices(
+                slices_data, coord1, coord2, axis_labels, slice_info,
                 cmap=slice_config['cmap'],
-                vmin=slice_config['vmin'],
-                vmax=slice_config['vmax'],
                 symmetric=slice_config['symmetric'],
-                slice_info=slice_info,
+                shared_scale=slice_config['shared_scale'],
                 save_path=save_path,
                 display=slice_config['display']
             )
+        else:
+            # Process each variable separately
+            for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
+                var_data = data[variable]
+                slice_data, coord1, coord2, axis_labels = extract_slice(
+                    var_data,
+                    slice_config['plane'],
+                    slice_config['index'],
+                    grid_info
+                )
+
+                # Apply x-direction cropping if specified (only for xy and xz planes)
+                if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
+                    slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+
+                # Build save path for this variable
+                save_path = None
+                if slice_config['save_fig'] and slice_config['save_dir']:
+                    filename = f"{variable}_{slice_config['plane']}_slice.png"
+                    save_path = os.path.join(slice_config['save_dir'], filename)
+
+                # Plot
+                plot_slice(
+                    slice_data, coord1, coord2, axis_labels,
+                    variable,
+                    cmap=slice_config['cmap'],
+                    vmin=slice_config['vmin'],
+                    vmax=slice_config['vmax'],
+                    symmetric=slice_config['symmetric'],
+                    slice_info=slice_info,
+                    save_path=save_path,
+                    display=slice_config['display']
+                )
 
     print("\n" + "=" * 60)
     print("Complete!")
@@ -764,7 +991,10 @@ def main():
     while True:
         choice = input("\nPlot another slice? (y/n): ").strip().lower()
         if choice in ('y', 'yes'):
-            slice_config = get_slice_config(var_metadata, grid_info)
+            if is_2d_slice:
+                slice_config = get_2d_plot_config(var_metadata, grid_info, slice_label)
+            else:
+                slice_config = get_slice_config(var_metadata, grid_info)
             if slice_config is None:
                 continue
 
@@ -773,62 +1003,106 @@ def main():
                 var_metadata,
                 slice_config['variables'],
                 grid_info=grid_info,
-                output_dim=3
+                output_dim=2 if is_2d_slice else 3
             )
             if not data:
                 print("Error: Failed to load selected variables.")
                 continue
 
-            slice_loc = get_slice_location(grid_info, slice_config['plane'], slice_config['index'])
-            if slice_config['plane'] == 'xy':
-                slice_info = f"(z = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(z index = {slice_loc})"
-            elif slice_config['plane'] == 'xz':
-                slice_info = f"(y = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(y index = {slice_loc})"
-            else:
-                slice_info = f"(x = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(x index = {slice_loc})"
+            if is_2d_slice:
+                axis_info = ut.slice_axis_info(slice_label)
+                axis_labels = axis_info['axis_labels'] if axis_info else ('$x$', '$y$')
+                coord1_key, coord2_key = axis_info['coord_keys'] if axis_info else ('grid_x', 'grid_y')
+                slice_info = f"({axis_info['normal_dir']} index = {axis_info['normal_index']})" if axis_info else ""
+                sample_var = data[slice_config['variables'][0]]
+                coord1 = grid_info.get(coord1_key, np.arange(sample_var.shape[1]))
+                coord2 = grid_info.get(coord2_key, np.arange(sample_var.shape[0]))
 
-            if slice_config['combined_plot']:
-                slices_data = []
-                coord1, coord2, axis_labels = None, None, None
-                for variable in tqdm(slice_config['variables'], desc="Extracting", unit="var"):
-                    var_data = data[variable]
-                    slice_data, coord1, coord2, axis_labels = extract_slice(
-                        var_data, slice_config['plane'], slice_config['index'], grid_info
-                    )
-                    if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                        slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
-                    slices_data.append((variable, slice_data))
-                    print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
-
-                save_path = None
-                if slice_config['save_fig'] and slice_config['save_dir']:
-                    filename = f"combined_{slice_config['plane']}_slice.png"
-                    save_path = os.path.join(slice_config['save_dir'], filename)
-                plot_combined_slices(
-                    slices_data, coord1, coord2, axis_labels, slice_info,
-                    cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
-                    shared_scale=slice_config['shared_scale'], save_path=save_path,
-                    display=slice_config['display']
-                )
-            else:
-                for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
-                    var_data = data[variable]
-                    slice_data, coord1, coord2, axis_labels = extract_slice(
-                        var_data, slice_config['plane'], slice_config['index'], grid_info
-                    )
-                    if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                        slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                if slice_config['combined_plot']:
+                    slices_data = []
+                    for variable in tqdm(slice_config['variables'], desc="Preparing", unit="var"):
+                        s_data = np.squeeze(data[variable])
+                        c1 = coord1
+                        if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
+                            s_data, c1 = apply_x_crop(s_data, c1, slice_config['x_crop'])
+                        slices_data.append((variable, s_data))
+                        print(f"\n{variable}: min={np.nanmin(s_data):.4e}, max={np.nanmax(s_data):.4e}, mean={np.nanmean(s_data):.4e}")
                     save_path = None
                     if slice_config['save_fig'] and slice_config['save_dir']:
-                        filename = f"{variable}_{slice_config['plane']}_slice.png"
-                        save_path = os.path.join(slice_config['save_dir'], filename)
-                    plot_slice(
-                        slice_data, coord1, coord2, axis_labels, variable,
-                        cmap=slice_config['cmap'], vmin=slice_config['vmin'],
-                        vmax=slice_config['vmax'], symmetric=slice_config['symmetric'],
-                        slice_info=slice_info, save_path=save_path,
+                        save_path = os.path.join(slice_config['save_dir'], f"combined_{slice_label}_slice.png")
+                    plot_combined_slices(
+                        slices_data, c1, coord2, axis_labels, slice_info,
+                        cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
+                        shared_scale=slice_config['shared_scale'], save_path=save_path,
                         display=slice_config['display']
                     )
+                else:
+                    for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
+                        s_data = np.squeeze(data[variable])
+                        c1, c2 = coord1, coord2
+                        if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
+                            s_data, c1 = apply_x_crop(s_data, c1, slice_config['x_crop'])
+                        save_path = None
+                        if slice_config['save_fig'] and slice_config['save_dir']:
+                            save_path = os.path.join(slice_config['save_dir'], f"{variable}_{slice_label}_slice.png")
+                        plot_slice(
+                            s_data, c1, c2, axis_labels, variable,
+                            cmap=slice_config['cmap'], vmin=slice_config['vmin'],
+                            vmax=slice_config['vmax'], symmetric=slice_config['symmetric'],
+                            slice_info=slice_info, save_path=save_path,
+                            display=slice_config['display']
+                        )
+            else:
+                slice_loc = get_slice_location(grid_info, slice_config['plane'], slice_config['index'])
+                if slice_config['plane'] == 'xy':
+                    slice_info = f"(z = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(z index = {slice_loc})"
+                elif slice_config['plane'] == 'xz':
+                    slice_info = f"(y = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(y index = {slice_loc})"
+                else:
+                    slice_info = f"(x = {slice_loc:.4f})" if isinstance(slice_loc, float) else f"(x index = {slice_loc})"
+
+                if slice_config['combined_plot']:
+                    slices_data = []
+                    coord1, coord2, axis_labels = None, None, None
+                    for variable in tqdm(slice_config['variables'], desc="Extracting", unit="var"):
+                        var_data = data[variable]
+                        slice_data, coord1, coord2, axis_labels = extract_slice(
+                            var_data, slice_config['plane'], slice_config['index'], grid_info
+                        )
+                        if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
+                            slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                        slices_data.append((variable, slice_data))
+                        print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
+
+                    save_path = None
+                    if slice_config['save_fig'] and slice_config['save_dir']:
+                        filename = f"combined_{slice_config['plane']}_slice.png"
+                        save_path = os.path.join(slice_config['save_dir'], filename)
+                    plot_combined_slices(
+                        slices_data, coord1, coord2, axis_labels, slice_info,
+                        cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
+                        shared_scale=slice_config['shared_scale'], save_path=save_path,
+                        display=slice_config['display']
+                    )
+                else:
+                    for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
+                        var_data = data[variable]
+                        slice_data, coord1, coord2, axis_labels = extract_slice(
+                            var_data, slice_config['plane'], slice_config['index'], grid_info
+                        )
+                        if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
+                            slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                        save_path = None
+                        if slice_config['save_fig'] and slice_config['save_dir']:
+                            filename = f"{variable}_{slice_config['plane']}_slice.png"
+                            save_path = os.path.join(slice_config['save_dir'], filename)
+                        plot_slice(
+                            slice_data, coord1, coord2, axis_labels, variable,
+                            cmap=slice_config['cmap'], vmin=slice_config['vmin'],
+                            vmax=slice_config['vmax'], symmetric=slice_config['symmetric'],
+                            slice_info=slice_info, save_path=save_path,
+                            display=slice_config['display']
+                        )
 
             print("\n" + "=" * 60)
             print("Complete!")

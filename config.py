@@ -8,6 +8,7 @@ folder_path = ''
 input_format = 'visu' # 'text' (.dat) or 'visu' (.xdmf)
 cases = ['Tests'] # case names must match folder names exactly
 timesteps = ['680000']
+slice_label = '' # 2D slice label (e.g. 'yi8' for xz slice at y index 8), leave blank for full 3D data
 
 thermo_on = True    
 mhd_on = True

@@ -40,25 +40,41 @@ except ImportError:
     pass  # readline not available on all platforms
 
 
-def load_xdmf_data(visu_folder, timestep):
+def load_xdmf_data(visu_folder, timestep, slice_label=None):
     """
     Load all available XDMF data from the 2_visu folder.
     Prioritises tsp_avg (time-space averaged) files, falls back to t_avg (time averaged) if not found.
     Returns dictionary of all variables, grid info, and whether data is already space-averaged.
-    """
-    # Preferred: time-space averaged files (already spatially averaged, 1D in y)
-    tsp_avg_patterns = [
-        f'domain1_tsp_avg_flow_{timestep}.xdmf',
-        f'domain1_tsp_avg_thermo_{timestep}.xdmf',
-        f'domain1_tsp_avg_mhd_{timestep}.xdmf',
-    ]
 
-    # Fallback: time averaged files (3D, need spatial averaging)
-    t_avg_patterns = [
-        f'domain1_t_avg_flow_{timestep}.xdmf',
-        f'domain1_t_avg_thermo_{timestep}.xdmf',
-        f'domain1_t_avg_mhd_{timestep}.xdmf',
-    ]
+    Args:
+        visu_folder: Path to the 2_visu folder
+        timestep: Timestep string
+        slice_label: Optional 2D slice label (e.g., 'yi8'). When set, loads
+                     pre-sliced 2D data instead of full 3D fields.
+    """
+    # Build filename patterns, optionally including the slice label
+    if slice_label:
+        tsp_avg_patterns = [
+            f'domain1_tsp_avg_flow_{slice_label}_{timestep}.xdmf',
+            f'domain1_tsp_avg_thermo_{slice_label}_{timestep}.xdmf',
+            f'domain1_tsp_avg_mhd_{slice_label}_{timestep}.xdmf',
+        ]
+        t_avg_patterns = [
+            f'domain1_t_avg_flow_{slice_label}_{timestep}.xdmf',
+            f'domain1_t_avg_thermo_{slice_label}_{timestep}.xdmf',
+            f'domain1_t_avg_mhd_{slice_label}_{timestep}.xdmf',
+        ]
+    else:
+        tsp_avg_patterns = [
+            f'domain1_tsp_avg_flow_{timestep}.xdmf',
+            f'domain1_tsp_avg_thermo_{timestep}.xdmf',
+            f'domain1_tsp_avg_mhd_{timestep}.xdmf',
+        ]
+        t_avg_patterns = [
+            f'domain1_t_avg_flow_{timestep}.xdmf',
+            f'domain1_t_avg_thermo_{timestep}.xdmf',
+            f'domain1_t_avg_mhd_{timestep}.xdmf',
+        ]
 
     # Check which tsp_avg files exist
     tsp_avg_files = [(p, os.path.join(visu_folder, p)) for p in tsp_avg_patterns
@@ -402,6 +418,25 @@ def get_user_input():
 
     timestep = input("Timestep: ").strip()
 
+    # Detect available 2D slice files
+    available_slices = ut.find_available_slices(visu_folder, timestep)
+
+    slice_label = None
+    if available_slices:
+        print(f"\nAvailable 2D slices: {', '.join(available_slices)}")
+        slice_input = input("Use a 2D slice? Enter label or leave blank for full 3D []: ").strip()
+        if slice_input and slice_input in available_slices:
+            slice_label = slice_input
+            print(f"  -> Using 2D slice: {slice_label}")
+        elif slice_input:
+            # Try to match partial input
+            matches = [s for s in available_slices if slice_input in s]
+            if matches:
+                slice_label = matches[0]
+                print(f"  -> Using 2D slice: {slice_label}")
+            else:
+                print(f"  -> Slice '{slice_input}' not found, using full 3D data")
+
     # Thermo options
     thermo_input = input("Thermo enabled? (y/n) [n]: ").strip().lower()
     thermo_on = thermo_input == 'y'
@@ -446,6 +481,7 @@ def get_user_input():
         'half_channel': half_channel,
         'save_fig': save_fig,
         'display_fig': display_fig,
+        'slice_label': slice_label,
     }
 
 
@@ -466,7 +502,7 @@ def main():
     timestep = config['timestep']
 
     # Load XDMF data
-    data, grid_info = load_xdmf_data(visu_folder, timestep)
+    data, grid_info = load_xdmf_data(visu_folder, timestep, slice_label=config.get('slice_label'))
 
     if not data:
         print("Error: No data loaded. Check file paths.")

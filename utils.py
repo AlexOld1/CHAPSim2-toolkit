@@ -119,6 +119,136 @@ def visu_file_paths(folder_path, case, timestep):
     ]
     return file_names
 
+
+# =====================================================================================================================================================
+# 2D SLICE FILE UTILITIES
+# =====================================================================================================================================================
+
+def parse_slice_label(label):
+    """
+    Parse a 2D slice label from a filename component.
+
+    Examples:
+        'yi8'  -> ('y', 8)   # xz slice at y index 8
+        'xi5'  -> ('x', 5)   # yz slice at x index 5
+        'zi3'  -> ('z', 3)   # xy slice at z index 3
+
+    Returns:
+        tuple: (direction, index) or None if not a valid slice label
+    """
+    import re
+    match = re.match(r'^([xyz])i(\d+)$', label)
+    if match:
+        return match.group(1), int(match.group(2))
+    return None
+
+
+def find_available_slices(visu_folder, timestep=None):
+    """
+    Find available 2D slice labels in a visu folder.
+
+    Args:
+        visu_folder: Path to the 2_visu folder
+        timestep: Optional timestep to filter for
+
+    Returns:
+        list of unique slice labels found, sorted (e.g., ['xi5', 'yi8', 'zi3'])
+    """
+    import re
+    labels = set()
+    try:
+        for f in os.listdir(visu_folder):
+            if not f.endswith('.xdmf'):
+                continue
+            match = re.search(r'_([xyz]i\d+)_(\d+)\.xdmf$', f)
+            if match:
+                label = match.group(1)
+                ts = match.group(2)
+                if timestep is None or ts == str(timestep):
+                    labels.add(label)
+    except OSError:
+        pass
+    return sorted(labels)
+
+
+def visu_slice_file_paths(folder_path, case, timestep, slice_label):
+    """
+    Generate XDMF file paths for 2D slice data.
+
+    Args:
+        folder_path: Base folder path
+        case: Case name
+        timestep: Timestep string
+        slice_label: Slice label (e.g., 'yi8')
+
+    Returns:
+        list of file paths
+    """
+    file_names = [
+        f'{folder_path}{case}/2_visu/domain1_flow_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_t_avg_flow_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_tsp_avg_flow_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_thermo_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_t_avg_thermo_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_tsp_avg_thermo_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_mhd_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_t_avg_mhd_{slice_label}_{timestep}.xdmf',
+        f'{folder_path}{case}/2_visu/domain1_tsp_avg_mhd_{slice_label}_{timestep}.xdmf',
+    ]
+    return file_names
+
+
+def slice_axis_info(slice_label):
+    """
+    Get axis labels and grid coordinate keys for a 2D slice.
+
+    Args:
+        slice_label: Slice label string (e.g., 'yi8')
+
+    Returns:
+        dict with keys:
+            'plane': slice plane name ('xy', 'xz', or 'yz')
+            'normal_dir': direction normal to slice ('x', 'y', or 'z')
+            'normal_index': integer index along the normal direction
+            'axis_labels': tuple of (xlabel, ylabel) for plotting
+            'coord_keys': tuple of (coord1_key, coord2_key) grid_info keys
+        or None if slice_label is invalid
+    """
+    parsed = parse_slice_label(slice_label)
+    if parsed is None:
+        return None
+
+    direction, index = parsed
+
+    if direction == 'y':
+        # xz slice at constant y
+        return {
+            'plane': 'xz',
+            'normal_dir': 'y',
+            'normal_index': index,
+            'axis_labels': ('$x$', '$z$'),
+            'coord_keys': ('grid_x', 'grid_z'),
+        }
+    elif direction == 'x':
+        # yz slice at constant x
+        return {
+            'plane': 'yz',
+            'normal_dir': 'x',
+            'normal_index': index,
+            'axis_labels': ('$y$', '$z$'),
+            'coord_keys': ('grid_y', 'grid_z'),
+        }
+    elif direction == 'z':
+        # xy slice at constant z
+        return {
+            'plane': 'xy',
+            'normal_dir': 'z',
+            'normal_index': index,
+            'axis_labels': ('$x$', '$y$'),
+            'coord_keys': ('grid_x', 'grid_y'),
+        }
+    return None
+
 # =====================================================================================================================================================
 # XDMF READING UTILITIES
 # =====================================================================================================================================================
