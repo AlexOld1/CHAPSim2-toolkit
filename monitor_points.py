@@ -11,23 +11,31 @@ plt.rcParams['path.simplify_threshold'] = 1.0
 # Robust y-limit calculation (IQR-based) for diverged simulations
 # ====================================================================================================================================================
 
-def compute_robust_ylim(data, iqr_factor=3.0, padding=0.05):
+def compute_robust_ylim(data, padding=0.05, max_decades=3.0):
     """
-    Compute robust y-axis limits using the Interquartile Range (IQR) method.
+    Compute robust y-axis limits by masking diverged data points.
     
-    Unlike mean ± k*sigma, the median and quartiles are resistant to extreme
-    outliers, so this correctly identifies the 'physical' data range even when
-    the simulation has diverged to very large values.
+    Uses the Median Absolute Deviation (MAD) — a robust measure of spread
+    that is insensitive to extreme outliers — to identify the scale of the
+    'physical' data.  Points whose distance from the median exceeds
+    10^max_decades times the MAD are considered diverged and excluded.
+    The y-limits are then set to the full range of the remaining data.
+    
+    This correctly handles:
+      - Strong turbulence growing from ~1 to ~10 (not clipped)
+      - Diverged simulations with values ~1e6+ (clipped)
+      - Restarts after divergence, where the file contains a divergence
+        spike in the middle followed by good (possibly turbulent) data
     
     Parameters
     ----------
     data : array-like
         The data array to compute limits for.
-    iqr_factor : float
-        Multiplier for the IQR to define the fence (default 3.0).
-        Larger values are more permissive (show more of the data range).
     padding : float
         Fractional padding added to the computed range for visual comfort.
+    max_decades : float
+        Number of orders of magnitude above the MAD to allow before
+        treating a point as diverged (default 3.0, i.e. 1000 × MAD).
     
     Returns
     -------
@@ -37,29 +45,33 @@ def compute_robust_ylim(data, iqr_factor=3.0, padding=0.05):
     if len(finite_data) == 0:
         return None
     
-    q1 = np.percentile(finite_data, 25)
-    q3 = np.percentile(finite_data, 75)
-    iqr = q3 - q1
+    median = np.median(finite_data)
+    mad = np.median(np.abs(finite_data - median))
     
-    # Handle near-constant data where IQR ≈ 0
-    if iqr < 1e-15:
-        return None  # No meaningful spread to clip
+    # Handle near-constant data where MAD ≈ 0
+    if mad < 1e-15:
+        # Use a fraction of the median as the scale, with a floor of 1.0
+        # so that truly constant data at zero still works.
+        mad = max(abs(median), 1.0) * 0.01
     
-    lower_fence = q1 - iqr_factor * iqr
-    upper_fence = q3 + iqr_factor * iqr
+    # Threshold: points farther than 10^max_decades * MAD from the median
+    # are considered diverged.  With max_decades=3 this means >1000× the
+    # typical deviation — extremely permissive for physical data.
+    threshold = mad * 10**max_decades
+    mask = np.abs(finite_data - median) <= threshold
+    clean_data = finite_data[mask]
     
-    data_min = np.min(finite_data)
-    data_max = np.max(finite_data)
+    if len(clean_data) == 0:
+        return None
     
-    # Only apply if actual data exceeds the fence (i.e. divergence detected)
-    if data_min >= lower_fence and data_max <= upper_fence:
-        return None  # Data is well-behaved, let matplotlib auto-scale
+    # If nothing was removed, data is well-behaved — let matplotlib auto-scale
+    if len(clean_data) == len(finite_data):
+        return None
     
-    # Clamp bounds to at least cover all non-outlier data
-    ymin = max(data_min, lower_fence)
-    ymax = min(data_max, upper_fence)
+    # Set limits to the full range of the non-diverged data
+    ymin = np.min(clean_data)
+    ymax = np.max(clean_data)
     
-    # Add visual padding
     span = ymax - ymin
     ymin -= padding * span
     ymax += padding * span
@@ -120,11 +132,11 @@ def plot_with_avg(ax, time, data, label, color, window):
     Plot raw data and, if a running average window is set, overlay the
     smoothed curve.
     """
-    ax.plot(time, data, label=label, linewidth=0.8, color=color, alpha=0.45)
+    ax.plot(time, data, label=label, linewidth=0.6, color=color, alpha=0.35)
     if window > 1:
         avg = running_average(data, window)
         ax.plot(time, avg, label=f'{label} (avg, n={window})',
-                linewidth=1.4, color=color)
+                linewidth=1.6, color='black', linestyle='--')
 
 
 # ====================================================================================================================================================
@@ -175,7 +187,7 @@ plt_pts = get_yes_no("Plot monitor points?", 'y')
 plt_bulk = get_yes_no("Plot bulk/change history?", 'y')
 display_plots = get_yes_no("Display plots interactively?", 'n')
 auto_ylim = get_yes_no("Auto-limit y-axis range for diverged data?", 'y')
-avg_window = get_int("Running average window size (1 = off)", 50)
+avg_window = get_int("Running average window size (1 = off)", 1000)
 
 print("-" * 100)
 print()
