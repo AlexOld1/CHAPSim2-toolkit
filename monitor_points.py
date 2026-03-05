@@ -108,9 +108,9 @@ def add_stats_box(ax, data):
         f"max:  {np.max(finite):.4g}\n"
         f"med:  {np.median(finite):.4g}"
     )
-    props = dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.7)
-    ax.text(0.98, 0.95, stats_text, transform=ax.transAxes,
-            fontsize=7, verticalalignment='top', horizontalalignment='right',
+    props = dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.7)
+    ax.text(0.02, 0.05, stats_text, transform=ax.transAxes,
+            fontsize=7, verticalalignment='bottom', horizontalalignment='left',
             bbox=props, family='monospace')
 
 
@@ -132,11 +132,11 @@ def plot_with_avg(ax, time, data, label, color, window):
     Plot raw data and, if a running average window is set, overlay the
     smoothed curve.
     """
-    ax.plot(time, data, label=label, linewidth=0.6, color=color, alpha=0.35)
+    ax.plot(time, data, label=label, linewidth=1.0, color=color)
     if window > 1:
         avg = running_average(data, window)
         ax.plot(time, avg, label=f'{label} (avg, n={window})',
-                linewidth=1.6, color='black', linestyle='--')
+                linewidth=0.5, color='black', linestyle='--', alpha=0.5)
 
 
 # ====================================================================================================================================================
@@ -187,7 +187,7 @@ plt_pts = get_yes_no("Plot monitor points?", 'y')
 plt_bulk = get_yes_no("Plot bulk/change history?", 'y')
 display_plots = get_yes_no("Display plots interactively?", 'n')
 auto_ylim = get_yes_no("Auto-limit y-axis range for diverged data?", 'y')
-avg_window = get_int("Running average window size (1 = off)", 1000)
+avg_window = get_int("Running average window size (1 = off)", 5000)
 
 print("-" * 100)
 print()
