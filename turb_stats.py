@@ -241,9 +241,11 @@ def create_data_loader(config: Config, data_types: List[str] = None):
     Args:
         config: Configuration object
         data_types: List of XDMF data types to load. Only used for XDMF format.
-                    Valid types: 'inst', 't_avg', 'tsp_avg', or specific combinations
-                    like 'tsp_avg_flow', 't_avg_thermo', etc.
-                    Defaults to ['tsp_avg'] for turb_stats (time-space averaged data).
+                    Valid types: 'inst', 't_avg', or specific combinations
+                    like 't_avg_flow', 't_avg_thermo', etc.
+                    Note: tsp_avg data is only available as .txt files in 1_data/
+                    and is NOT available as XDMF.  Use 't_avg' for Reynolds stress
+                    data (uu11, uu12, etc.) when using the XDMF loader.
 
     Returns:
         Data loader instance (TurbulenceTextData or TurbulenceXDMFData)
@@ -252,8 +254,10 @@ def create_data_loader(config: Config, data_types: List[str] = None):
 
     if fmt in ['xdmf', 'visu']:
         # Build data_types from what is actually enabled so we don't try
-        # to read files that may not exist (e.g. t_avg / tsp_avg when only
-        # instantaneous data is available).
+        # to read files that may not exist.
+        # Note: tsp_avg data is stored as .txt in 1_data/, not as XDMF.
+        # The t_avg XDMF files contain uu11, uu12, etc. needed for
+        # Reynolds stresses and TKE budget terms.
         if data_types is None:
             data_types = []
 
@@ -265,12 +269,9 @@ def create_data_loader(config: Config, data_types: List[str] = None):
                                   config.tke_viscous_diffusion_on or config.tke_pressure_transport_on or
                                   config.tke_turbulent_diffusion_on)
 
-            # tsp_avg needed for Reynolds stresses / TKE (uu11 etc.)
+            # t_avg contains Reynolds stresses (uu11 etc.), gradient terms,
+            # and mean velocities — used for both Re-stresses and TKE budgets
             if re_stress_enabled or tke_budget_enabled:
-                data_types.append('tsp_avg')
-
-            # t_avg needed for TKE budget gradient terms
-            if tke_budget_enabled:
                 data_types.append('t_avg')
 
             # Profiles only: load inst as fallback, t_avg preferred (processed

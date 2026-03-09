@@ -106,16 +106,19 @@ def get_quantities(thermo_on):
 # =====================================================================================================================================================
 
 def visu_file_paths(folder_path, case, timestep):
+    """Return XDMF file paths for instantaneous and time-averaged data.
+
+    Note: tsp_avg (time-space averaged) data is stored as .dat files
+    in 1_data/ and aren't available as XDMF.  Only instantaneous and
+    t_avg data have XDMF files in 2_visu/.
+    """
     file_names = [
         f'{folder_path}{case}/2_visu/domain1_flow_{timestep}.xdmf',
         f'{folder_path}{case}/2_visu/domain1_t_avg_flow_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_tsp_avg_flow_{timestep}.xdmf',
         f'{folder_path}{case}/2_visu/domain1_thermo_{timestep}.xdmf',
         f'{folder_path}{case}/2_visu/domain1_t_avg_thermo_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_tsp_avg_thermo_{timestep}.xdmf',
         f'{folder_path}{case}/2_visu/domain1_mhd_{timestep}.xdmf',
         f'{folder_path}{case}/2_visu/domain1_t_avg_mhd_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_tsp_avg_mhd_{timestep}.xdmf',
     ]
     return file_names
 
@@ -669,12 +672,14 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
         timestep (str, optional): Timestep identifier for dictionary key
         load_all_vars (bool, optional): If True, load all variables. If False, only required ones.
         data_types (list, optional): List of data types to load. If None, loads all files.
-            Valid types: 'inst', 't_avg', 'tsp_avg',
-            or specific combinations like 't_avg_flow', 'tsp_avg_thermo', etc.
+            Valid types: 'inst', 't_avg',
+            or specific combinations like 't_avg_flow', 't_avg_thermo', etc.
+            Note: tsp_avg data is stored as .txt files in 1_data/ and is
+            NOT available as XDMF.  Use the text data loader for tsp_avg data.
             Examples:
-                - ['tsp_avg'] loads only time-space averaged files (flow, thermo, mhd)
+                - ['t_avg'] loads only time-averaged files (flow, thermo, mhd)
                 - ['inst'] loads all instantaneous files (flow, thermo, mhd)
-                - ['tsp_avg_flow'] loads only time-space averaged flow files
+                - ['t_avg_flow'] loads only time-averaged flow files
 
     Returns:
         tuple: (visu_arrays_dic dict, grid_info dict)
@@ -717,18 +722,18 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
             filename = os.path.basename(f)
             # Check if file matches any of the requested data types
             for dtype in data_types:
-                if dtype in ['tsp_avg', 't_avg']:
-                    # Match prefix patterns like 'tsp_avg_flow', 'tsp_avg_thermo', 'tsp_avg_mhd'
-                    if f'{dtype}_' in filename:
+                if dtype == 't_avg':
+                    # Match t_avg prefix patterns like 't_avg_flow', 't_avg_thermo'
+                    if 't_avg_' in filename:
                         filtered_files.append(f)
                         break
                 elif dtype == 'inst':
-                    # Match instantaneous files (flow, thermo, mhd without t_avg or tsp_avg prefix)
-                    if 't_avg' not in filename and 'tsp_avg' not in filename:
+                    # Match instantaneous files (flow, thermo, mhd without t_avg prefix)
+                    if 't_avg' not in filename:
                         filtered_files.append(f)
                         break
                 else:
-                    # Match specific combinations like 'tsp_avg_flow', 't_avg_thermo'
+                    # Match specific combinations like 't_avg_flow', 't_avg_thermo'
                     if dtype in filename:
                         filtered_files.append(f)
                         break
@@ -736,24 +741,14 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
         if data_types:
             tqdm.write(f"Filtering for data types: {data_types}")
 
-    # If both t_avg and tsp_avg are requested, process tsp_avg first and t_avg last
-    # so t_avg values take precedence when prefixes are stripped.
-    if data_types is not None and 't_avg' in data_types and 'tsp_avg' in data_types:
-        existing_files.sort(key=lambda f: 1 if 't_avg_' in os.path.basename(f) else 0)
-
     for xdmf_file in tqdm(existing_files, desc="Processing XDMF files", unit="file"):
         try:
             tqdm.write(f"Opening file: {xdmf_file}")
 
             # Parse the XDMF file
 
-            # tsp_avg files are already space-averaged by the solver in the
-            # z-direction, but the binary data is stored as 3-D (nz=1, ny, nx).
-            # Reduce to 2-D (ny, nx) by default, or 1-D (ny,) when x is also
-            # averaged.  t_avg/inst files use the caller-supplied flags.
-            if 'tsp_avg' in xdmf_file:
-                output_dim = 1 if average_x else 2
-            elif average_z and average_x:
+            # Determine output dimensionality based on caller-supplied flags.
+            if average_z and average_x:
                 output_dim = 1
             elif average_z:
                 output_dim = 2
@@ -763,9 +758,7 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
 
             if arrays:
                 # Extract file type from filename for prefixing (optional)
-                if 'tsp_avg' in xdmf_file:
-                    file_type = 'tsp_avg'
-                elif 't_avg' in xdmf_file:
+                if 't_avg' in xdmf_file:
                     file_type = 't_avg'
                 elif '_mhd_' in xdmf_file:
                     file_type = 'mhd'
@@ -782,10 +775,8 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
 
                 # Add arrays to dictionary, stripping averaging prefixes for consistency
                 for var_name, var_data in arrays.items():
-                    # Strip tsp_avg_ or t_avg_ prefix so statistics code can use base names
-                    if var_name.startswith('tsp_avg_'):
-                        base_name = var_name[8:]  # Remove 'tsp_avg_'
-                    elif var_name.startswith('t_avg_'):
+                    # Strip t_avg_ prefix so statistics code can use base names
+                    if var_name.startswith('t_avg_'):
                         base_name = var_name[6:]  # Remove 't_avg_'
                     else:
                         base_name = var_name
