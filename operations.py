@@ -194,6 +194,11 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     # Mean velocities and pressure
     # ------------------------------------------------------------------
     u1, u2, u3 = get_var('u1'), get_var('u2'), get_var('u3')
+
+    def _or_zero(val):
+        """Replace None with a zeros array shaped like u1."""
+        return val if val is not None else np.zeros_like(u1)
+   
     pr = get_var('pr')
 
     # Mean velocity gradient tensor dU_i/dx_j  (shape: 3,3,...)
@@ -255,9 +260,9 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         """Build (3,3,...) tensor from func(i,j)."""
         return np.array([[func(i, j) for j in range(3)] for i in range(3)])
 
-    mean_conv_tensor_x1 = _build_sym_tensor(lambda i, j: u_fields[0] * dR[i, j, 0] if dR[i, j, 0] is not None else np.zeros_like(u_fields[0]))
-    mean_conv_tensor_x2 = _build_sym_tensor(lambda i, j: u_fields[1] * dR[i, j, 1] if dR[i, j, 1] is not None else np.zeros_like(u_fields[1]))
-    mean_conv_tensor_x3 = _build_sym_tensor(lambda i, j: u_fields[2] * dR[i, j, 2] if dR[i, j, 2] is not None else np.zeros_like(u_fields[2]))
+    mean_conv_tensor_x1 = _build_sym_tensor(lambda i, j: _or_zero(u_fields[0] * dR[i, j, 0] if dR[i, j, 0] is not None else None))
+    mean_conv_tensor_x2 = _build_sym_tensor(lambda i, j: _or_zero(u_fields[1] * dR[i, j, 1] if dR[i, j, 1] is not None else None))
+    mean_conv_tensor_x3 = _build_sym_tensor(lambda i, j: _or_zero(u_fields[2] * dR[i, j, 2] if dR[i, j, 2] is not None else None))
 
     # ------------------------------------------------------------------
     # Laplacian of Reynolds stresses  ∂²⟨u'ᵢu'ⱼ⟩/∂x_k²
@@ -274,9 +279,9 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         else:        # z
             return grad_z(dR[i, j, 2]) if dR[i, j, 2] is not None else None
 
-    lap_re_stress_tensor_x1 = _build_sym_tensor(lambda i, j: _lap_component(i, j, 0) if _lap_component(i, j, 0) is not None else np.zeros_like(u1))
-    lap_re_stress_tensor_x2 = _build_sym_tensor(lambda i, j: _lap_component(i, j, 1) if _lap_component(i, j, 1) is not None else np.zeros_like(u1))
-    lap_re_stress_tensor_x3 = _build_sym_tensor(lambda i, j: _lap_component(i, j, 2) if _lap_component(i, j, 2) is not None else np.zeros_like(u1))
+    lap_re_stress_tensor_x1 = _build_sym_tensor(lambda i, j: _or_zero(_lap_component(i, j, 0)))
+    lap_re_stress_tensor_x2 = _build_sym_tensor(lambda i, j: _or_zero(_lap_component(i, j, 1)))
+    lap_re_stress_tensor_x3 = _build_sym_tensor(lambda i, j: _or_zero(_lap_component(i, j, 2)))
 
     # ------------------------------------------------------------------
     # Pressure-velocity fluctuation correlations
@@ -286,13 +291,6 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     for i in range(3):
         if pru[i] is not None and pr is not None:
             pru_prime[i] = pru[i] - pr * u_fields[i]
-
-    # p' estimate
-    if pru_prime[0] is not None and uu_prime[0, 0] is not None:
-        denom = np.sqrt(np.clip(uu_prime[0, 0], 1e-30, None))
-        pr_prime = pru_prime[0] / denom
-    else:
-        pr_prime = np.zeros_like(u1) if u1 is not None else None
 
     # ∂⟨p'u'ᵢ⟩/∂x_j
     press_grad = [[None]*3 for _ in range(3)]
@@ -304,25 +302,22 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     # ------------------------------------------------------------------
     # Pressure-strain correlation tensor  ⟨p' ∂u'ᵢ/∂xⱼ⟩
     #   = ⟨p ∂uᵢ/∂xⱼ⟩ − ⟨p⟩ ∂⟨uᵢ⟩/∂xⱼ
-    # Input variables named 'pdudx_ij' store the raw ⟨p ∂uᵢ/∂xⱼ⟩.
+    # The raw ⟨p ∂uᵢ/∂xⱼ⟩ is computed from time-averaged pu data as
+    # ∂⟨puᵢ⟩/∂xⱼ.
     # ------------------------------------------------------------------
-    pdudx_names = {(i, j): f'pdudx_{i+1}{j+1}' for i in range(3) for j in range(3)}
-
     pdudx_prime = {}
-    for (i, j), name in pdudx_names.items():
-        raw = get_var(name)
-        if raw is not None and pr is not None and du_dx[i][j] is not None:
-            pdudx_prime[i, j] = raw - pr * du_dx[i][j]
-        elif raw is not None:
-            pdudx_prime[i, j] = raw
-        else:
-            pdudx_prime[i, j] = None
+    for i in range(3):
+        for j in range(3):
+            raw = grad_fns[j](pru[i])  # ∂⟨puᵢ⟩/∂xⱼ
+            if raw is not None:
+                pdudx_prime[i, j] = raw - pr * du_dx[i][j]
+            else:
+                pdudx_prime[i, j] = None
 
-    _z = np.zeros_like(u1) if u1 is not None else None
     pressure_strain_tensor = np.array([
-        [pdudx_prime.get((0,0), _z), pdudx_prime.get((0,1), _z), pdudx_prime.get((0,2), _z)],
-        [pdudx_prime.get((1,0), _z), pdudx_prime.get((1,1), _z), pdudx_prime.get((1,2), _z)],
-        [pdudx_prime.get((2,0), _z), pdudx_prime.get((2,1), _z), pdudx_prime.get((2,2), _z)],
+        [_or_zero(pdudx_prime[0,0]), _or_zero(pdudx_prime[0,1]), _or_zero(pdudx_prime[0,2])],
+        [_or_zero(pdudx_prime[1,0]), _or_zero(pdudx_prime[1,1]), _or_zero(pdudx_prime[1,2])],
+        [_or_zero(pdudx_prime[2,0]), _or_zero(pdudx_prime[2,1]), _or_zero(pdudx_prime[2,2])],
     ])
 
     # ------------------------------------------------------------------
@@ -350,12 +345,12 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         if dudu[i, j] is not None and dudu_mean[i, j] is not None:
             dudu_prime[i, j] = dudu_prime[j, i] = dudu[i, j] - dudu_mean[i, j]
         else:
-            dudu_prime[i, j] = dudu_prime[j, i] = dudu.get((i, j))
+            dudu_prime[i, j] = dudu_prime[j, i] = None
 
     dissipation_tensor = np.array([
-        [dudu_prime.get((0,0), np.zeros_like(u1)), dudu_prime.get((0,1), np.zeros_like(u1)), dudu_prime.get((0,2), np.zeros_like(u1))],
-        [dudu_prime.get((0,1), np.zeros_like(u1)), dudu_prime.get((1,1), np.zeros_like(u1)), dudu_prime.get((1,2), np.zeros_like(u1))],
-        [dudu_prime.get((0,2), np.zeros_like(u1)), dudu_prime.get((1,2), np.zeros_like(u1)), dudu_prime.get((2,2), np.zeros_like(u1))],
+        [_or_zero(dudu_prime[0,0]), _or_zero(dudu_prime[0,1]), _or_zero(dudu_prime[0,2])],
+        [_or_zero(dudu_prime[0,1]), _or_zero(dudu_prime[1,1]), _or_zero(dudu_prime[1,2])],
+        [_or_zero(dudu_prime[0,2]), _or_zero(dudu_prime[1,2]), _or_zero(dudu_prime[2,2])],
     ])
 
     # ------------------------------------------------------------------
@@ -396,12 +391,9 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         tp = _triple_prime(i+1, j+1, k+1)
         return grad_fns[k](tp)
 
-    def _zero():
-        return np.zeros_like(u1) if u1 is not None else 0.0
-
-    turb_conv_tensor_x1 = _build_sym_tensor(lambda i, j: _turb_conv_component(i, j, 0) if _turb_conv_component(i, j, 0) is not None else _zero())
-    turb_conv_tensor_x2 = _build_sym_tensor(lambda i, j: _turb_conv_component(i, j, 1) if _turb_conv_component(i, j, 1) is not None else _zero())
-    turb_conv_tensor_x3 = _build_sym_tensor(lambda i, j: _turb_conv_component(i, j, 2) if _turb_conv_component(i, j, 2) is not None else _zero())
+    turb_conv_tensor_x1 = _build_sym_tensor(lambda i, j: _or_zero(_turb_conv_component(i, j, 0)))
+    turb_conv_tensor_x2 = _build_sym_tensor(lambda i, j: _or_zero(_turb_conv_component(i, j, 1)))
+    turb_conv_tensor_x3 = _build_sym_tensor(lambda i, j: _or_zero(_turb_conv_component(i, j, 2)))
 
     # ------------------------------------------------------------------
     # Output
@@ -416,7 +408,6 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         'lap_re_stress_tensor_x1': lap_re_stress_tensor_x1,
         'lap_re_stress_tensor_x2': lap_re_stress_tensor_x2,
         'lap_re_stress_tensor_x3': lap_re_stress_tensor_x3,
-        'pr_prime': pr_prime,
         'press_velocity_fluc_grad_tensor': press_velocity_fluc_grad_tensor,
         'turb_conv_tensor_x1': turb_conv_tensor_x1,
         'turb_conv_tensor_x2': turb_conv_tensor_x2,
