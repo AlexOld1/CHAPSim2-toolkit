@@ -512,9 +512,12 @@ def parse_variable_selection(var_choice, variables):
 def get_2d_plot_config(var_metadata, grid_info, slice_label):
     """Get plot configuration for already-2D slice data."""
 
-    # List available variables (2D)
+    # List available variables (2D, or 3D with a singleton dimension)
     all_variables = sorted(var_metadata.keys())
-    variables = [v for v in all_variables if len(var_metadata[v].get('shape', ())) == 2]
+    variables = [v for v in all_variables
+                 if len(var_metadata[v].get('shape', ())) == 2
+                 or (len(var_metadata[v].get('shape', ())) == 3
+                     and min(var_metadata[v]['shape']) == 1)]
 
     if not variables:
         print("Error: No 2D variables found in dataset.")
