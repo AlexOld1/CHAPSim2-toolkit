@@ -3,16 +3,13 @@
 # Define input cases ==================================================================================================================================
 
 # format: folder_path/case/1_data/quantity_timestep.dat
-#folder_path = '/home/alex/sim_results/mhd_channel_validation/CPG/'
 folder_path = ''
 input_format = 'visu' # 'text' (.dat) or 'visu' (.xdmf)
 cases = ['Tests'] # case names must match folder names exactly
 timesteps = ['680000']
 slice_label = '' # 2D slice label (e.g. 'yi8' for xz slice at y index 8), leave blank for full 3D data
-
 thermo_on = True    
 mhd_on = True
-
 forcing = 'CMF' # 'CMF' or 'CPG'
 Re = [5000] # indexing matches 'cases' if different Re used for different cases. Use bulk reference value for CPG.
 ref_temp = [670] # Kelvin
@@ -26,7 +23,7 @@ tke_on = True
 profile_direction = 'y' # 'y' (wall-normal), 'x' (streamwise), or 'both'
 slice_coords = '' # y-profiles: x coords for slices, e.g. '0.5,1.0' (blank = streamwise avg)
 x_profile_y_coords = '' # x-profiles: y coords for slices, e.g. '0.0,0.5' (blank = channel centreline)
-surface_plot_on = False # Plot 2D (y,x) surface contour maps of each statistic (requires 2D data, i.e. average_z_direction=True, average_x_direction=False)
+surface_plot_on = False # Plot 2D (y,x) surface contour maps of each statistic (requires 2D data)
 
 # Reynolds stresses
 u_prime_sq_on = True
@@ -34,21 +31,21 @@ u_prime_v_prime_on = True
 w_prime_sq_on = True
 v_prime_sq_on = True
 
-# TKE Budget terms
-tke_budget_on = True
-Re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components
+# Reynolds Stress Budget terms
+re_stress_budget_on = True
+re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components
 average_z_direction = True # Averaging valid for periodic directions
 average_x_direction = False
-tke_production_on = True
-tke_dissipation_on = True
-tke_convection_on = True
-tke_viscous_diffusion_on = True
-tke_pressure_transport_on = True
-tke_turbulent_diffusion_on = True
+production_on = True
+dissipation_on = True
+convection_on = True
+viscous_diffusion_on = True
+pressure_transport_on = True
+turbulent_diffusion_on = True
 
 # Processing options ----------------------------------------------------------------------------------------------------------------------------------
 
-# normalisation (1D data)
+# normalisation
 norm_by_u_tau_sq = True
 norm_ux_by_u_tau = True
 norm_y_to_y_plus = False

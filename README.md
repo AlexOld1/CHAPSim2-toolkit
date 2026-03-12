@@ -1,4 +1,4 @@
-# CHAPSim2_python_toolkit
+# CHAPSim2-toolkit
 A python post-processing and toolkit program based on NumPy and Matplotlib for DNS solver CHAPSim2.
 
 ## Install:

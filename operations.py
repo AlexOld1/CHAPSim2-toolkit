@@ -39,10 +39,10 @@ def _compute_u_tau_quantities(ux_data, Re_bulk, y_coords=None):
 
 def get_Re(case, cases, Re, ux_velocity, flow_forcing, y_coords=None):
     if flow_forcing == 'CMF':
-        if not int and len(Re) > 1:
+        if len(Re) > 1:
             cur_Re = Re[cases.index(case)]
         else:
-         cur_Re = Re[0]
+            cur_Re = Re[0]
     elif flow_forcing == 'CPG':
         profile = _extract_val(ux_velocity) if y_coords is None else ux_velocity
         # For nD data, average over non-y axes first to get a 1D profile
@@ -52,16 +52,16 @@ def get_Re(case, cases, Re, ux_velocity, flow_forcing, y_coords=None):
             y = y_coords
         else:
             y = ux_velocity[:, 1]
-        if not int and len(Re) > 1:
+        if len(Re) > 1:
             cur_Re = Re[cases.index(case)] * (0.5 * np.trapezoid(profile, y))
         else:
-           cur_Re = Re[0] * (0.5 * np.trapezoid(profile, y))
+            cur_Re = Re[0] * (0.5 * np.trapezoid(profile, y))
     else:
         raise ValueError("flow_forcing must be either 'CMF' or 'CPG'")
     return cur_Re
 
 def get_ref_Re(case, cases, Re):
-    if not int and len(Re) > 1:
+    if len(Re) > 1:
         ref_Re = Re[cases.index(case)]
     else:
         ref_Re = Re[0]
@@ -593,7 +593,7 @@ def compute_vorticity_omega_x(uy, uz, y, z):
 def compute_vorticity_omega_y(ux, uz, x, z):
     duxdz = np.gradient(ux, z)
     duzdx = np.gradient(uz, x)
-    return duxdz - duzdx
+    return duzdx - duxdz
 
 def compute_vorticity_omega_z(uy, ux, x, y):
     duydx = np.gradient(uy, x)

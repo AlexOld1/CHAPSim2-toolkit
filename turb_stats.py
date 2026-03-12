@@ -24,7 +24,6 @@ import utils as ut
 @dataclass
 class Config:
     """Configuration wrapper for all settings"""
-    # File paths and cases
     folder_path: str
     input_format: str
     cases: List[str]
@@ -32,44 +31,40 @@ class Config:
     thermo_on: bool
     mhd_on: bool
     forcing: str
-    Re: List[str]
-    ref_temp: str
+    Re: List[float]
+    ref_temp: List[float]
 
-    # Output options
     ux_velocity_on: bool
     temp_on: bool
     tke_on: bool
-    u_prime_sq_on: bool
-    u_prime_v_prime_on: bool
-    w_prime_sq_on: bool
-    v_prime_sq_on: bool
     profile_direction: str
     slice_coords: str
     x_profile_y_coords: str
     surface_plot_on: bool
+    u_prime_sq_on: bool
+    u_prime_v_prime_on: bool
+    w_prime_sq_on: bool
+    v_prime_sq_on: bool
 
-    # TKE Budget options
-    tke_budget_on: bool
-    Re_stress_component: str
+    re_stress_budget_on: bool
+    re_stress_component: str
     average_z_direction: bool
     average_x_direction: bool
-    tke_production_on: bool
-    tke_dissipation_on: bool
-    tke_convection_on: bool
-    tke_viscous_diffusion_on: bool
-    tke_pressure_transport_on: bool
-    tke_turbulent_diffusion_on: bool
+    production_on: bool
+    dissipation_on: bool
+    convection_on: bool
+    viscous_diffusion_on: bool
+    pressure_transport_on: bool
+    turbulent_diffusion_on: bool
+    pressure_strain_on: bool
 
-    # Processing options
     norm_by_u_tau_sq: bool
     norm_ux_by_u_tau: bool
     norm_y_to_y_plus: bool
     norm_temp_by_ref_temp: bool
 
-    # 2D slice options
     slice_label: str
 
-    # Plotting options
     half_channel_plot: bool
     linear_y_scale: bool
     log_y_scale: bool
@@ -79,7 +74,6 @@ class Config:
     save_to_path: bool
     plot_name: str
 
-    # Reference data options
     ux_velocity_log_ref_on: bool
     mhd_NK_ref_on: bool
     mkm180_ch_ref_on: bool
@@ -108,16 +102,17 @@ class Config:
             slice_coords=getattr(config_module, 'slice_coords', ''),
             x_profile_y_coords=getattr(config_module, 'x_profile_y_coords', ''),
             surface_plot_on=getattr(config_module, 'surface_plot_on', False),
-            tke_budget_on=getattr(config_module, 'tke_budget_on', False),
-            Re_stress_component=getattr(config_module, 'Re_stress_component', 'total'),
+            re_stress_budget_on=getattr(config_module, 're_stress_budget_on', False),
+            re_stress_component=getattr(config_module, 're_stress_component', 'total'),
             average_z_direction=getattr(config_module, 'average_z_direction', True),
             average_x_direction=getattr(config_module, 'average_x_direction', False),
-            tke_production_on=getattr(config_module, 'tke_production_on', False),
-            tke_dissipation_on=getattr(config_module, 'tke_dissipation_on', False),
-            tke_convection_on=getattr(config_module, 'tke_convection_on', False),
-            tke_viscous_diffusion_on=getattr(config_module, 'tke_viscous_diffusion_on', False),
-            tke_pressure_transport_on=getattr(config_module, 'tke_pressure_transport_on', False),
-            tke_turbulent_diffusion_on=getattr(config_module, 'tke_turbulent_diffusion_on', False),
+            production_on=getattr(config_module, 'production_on', False),
+            dissipation_on=getattr(config_module, 'dissipation_on', False),
+            convection_on=getattr(config_module, 'convection_on', False),
+            viscous_diffusion_on=getattr(config_module, 'viscous_diffusion_on', False),
+            pressure_transport_on=getattr(config_module, 'pressure_transport_on', False),
+            turbulent_diffusion_on=getattr(config_module, 'turbulent_diffusion_on', False),
+            pressure_strain_on=getattr(config_module, 'pressure_strain_on', False),
             norm_by_u_tau_sq=getattr(config_module, 'norm_by_u_tau_sq', False),
             norm_ux_by_u_tau=getattr(config_module, 'norm_ux_by_u_tau', False),
             norm_y_to_y_plus=getattr(config_module, 'norm_y_to_y_plus', False),
@@ -226,6 +221,7 @@ class PlotConfig:
     def colours(self):
         """Returns tuple of all color schemes"""
         return (self.colors_1, self.colors_2, self.colors_3, self.colors_4, self.colors_blck)
+    @property
     def colours_ref(self):
         """Returns tuple of all color schemes with black first for plotting a reference"""
         return (self.colors_blck, self.colors_1, self.colors_2, self.colors_3, self.colors_4)
@@ -264,14 +260,14 @@ def create_data_loader(config: Config, data_types: List[str] = None):
             re_stress_enabled = (config.u_prime_sq_on or config.u_prime_v_prime_on or
                                  config.v_prime_sq_on or config.w_prime_sq_on or config.tke_on)
 
-            tke_budget_enabled = (config.tke_budget_on or config.tke_production_on or
-                                  config.tke_dissipation_on or config.tke_convection_on or
-                                  config.tke_viscous_diffusion_on or config.tke_pressure_transport_on or
-                                  config.tke_turbulent_diffusion_on)
+            re_stress_budget_enabled = (config.re_stress_budget_on or config.production_on or
+                                  config.dissipation_on or config.convection_on or
+                                  config.viscous_diffusion_on or config.pressure_transport_on or
+                                  config.turbulent_diffusion_on)
 
             # t_avg contains Reynolds stresses (uu11 etc.), gradient terms,
             # and mean velocities — used for both Re-stresses and TKE budgets
-            if re_stress_enabled or tke_budget_enabled:
+            if re_stress_enabled or re_stress_budget_enabled:
                 data_types.append('t_avg')
 
             # Profiles only: load inst as fallback, t_avg preferred (processed
@@ -481,8 +477,8 @@ class ReferenceData:
     NK_REF_PATHS = {
         'ref_NK_Ha_6': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_6_turb.txt',
         'ref_NK_Ha_4': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_4_turb.txt',
-        'ref_NK_uu12_Ha_6': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_6_uu12_rms.txt',
-        'ref_NK_uu12_Ha_4': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_4_uu12_rms.txt',
+        'ref_NK_uu12_Ha_6': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_6_uv_rms.txt',
+        'ref_NK_uu12_Ha_4': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_4_uv_rms.txt',
     }
 
     #REF_XCOMP_HA_6_PATH = 'Reference_Data/XCompact3D_mhd_validation/u_prime_sq.txt'
@@ -693,17 +689,36 @@ class StreamwiseVelocity(Profiles):
 class Temperature(Profiles):
     """Temperature profile"""
 
-    def __init__(self, norm_temp_by_ref_temp: bool, ref_temp: float):
+    def __init__(self, norm_temp_by_ref_temp: bool, ref_temps: List[float], cases: List[str]):
         super().__init__('temperature', 'Temperature', ['T'])
         self.norm_temp_by_ref_temp = norm_temp_by_ref_temp
-        self.ref_temp = ref_temp
+        self.ref_temps = ref_temps
+        self.cases = cases
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        """Compute temperature profile with per-case ref_temp."""
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        ref_temp = float(self.ref_temps[self.cases.index(case)]) if len(self.ref_temps) > 1 else float(self.ref_temps[0])
+
+        if self.norm_temp_by_ref_temp:
+            result = op.read_profile(data_dict['T'])
+        else:
+            result = op.read_profile(data_dict['T']) * ref_temp
+
+        self.raw_results[(case, timestep)] = result
+        return True
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         if self.norm_temp_by_ref_temp:
             return op.read_profile(data_dict['T'])
         else:
-            undim_temp = op.read_profile(data_dict['T'])
-            return undim_temp * self.ref_temp
+            return op.read_profile(data_dict['T']) * float(self.ref_temps[0])
 
 
 class TurbulentKineticEnergy(Profiles):
@@ -765,25 +780,25 @@ class TkeBudgetComputer:
 
     # Registry mapping config flags to (op function, key in result dict)
     TERM_REGISTRY = {
-        'tke_production_on':          ('production',          'Production'),
-        'tke_dissipation_on':         ('dissipation',         'Dissipation'),
-        'tke_convection_on':          ('mean_convection',     'Mean Convection'),
-        'tke_viscous_diffusion_on':   ('viscous_diffusion',   'Viscous Diffusion'),
-        'tke_pressure_transport_on':  ('pressure_transport',  'Pressure Transport'),
-        'tke_turbulent_diffusion_on': ('turbulent_convection','Turbulent Diffusion'),
+        'production_on':          ('production',          'Production'),
+        'dissipation_on':         ('dissipation',         'Dissipation'),
+        'convection_on':          ('mean_convection',     'Mean Convection'),
+        'viscous_diffusion_on':   ('viscous_diffusion',   'Viscous Diffusion'),
+        'pressure_transport_on':  ('pressure_transport',  'Pressure Transport'),
+        'turbulent_diffusion_on': ('turbulent_convection','Turbulent Diffusion'),
+        'pressure_strain_on':     ('pressure_strain',     'Pressure Strain'),
     }
 
     def __init__(self, config: Config):
         self.config = config
-        self.Re = float(config.Re[0]) if config.Re else 1.0
-        self.uiuj = config.Re_stress_component
+        self.uiuj = config.re_stress_component
         self.average_z = config.average_z_direction
         self.average_x = config.average_x_direction
 
         # Determine which terms are enabled
         self.enabled_terms = []
         for flag, (term_name, label) in self.TERM_REGISTRY.items():
-            if config.tke_budget_on or getattr(config, flag, False):
+            if config.re_stress_budget_on or getattr(config, flag, False):
                 self.enabled_terms.append((flag, term_name, label))
 
         # Storage: {term_name: {(case, timestep): array}}
@@ -812,13 +827,17 @@ class TkeBudgetComputer:
             average_z=self.average_z, average_x=self.average_x
         )
 
+        # Get the correct Re for this case
+        Re = float(op.get_ref_Re(case, self.config.cases, self.config.Re))
+
         # Extract each enabled term
         _compute_fns = {
             'production':          lambda d: op.compute_production(d, self.uiuj),
-            'dissipation':         lambda d: op.compute_dissipation(self.Re, d, self.uiuj),
+            'dissipation':         lambda d: op.compute_dissipation(Re, d, self.uiuj),
             'mean_convection':     lambda d: op.compute_mean_convection(d, self.uiuj),
-            'viscous_diffusion':   lambda d: op.compute_viscous_diffusion(self.Re, d, self.uiuj),
+            'viscous_diffusion':   lambda d: op.compute_viscous_diffusion(Re, d, self.uiuj),
             'pressure_transport':  lambda d: op.compute_pressure_transport(d, self.uiuj),
+            'pressure_strain':     lambda d: op.compute_pressure_strain(d, self.uiuj),
             'turbulent_convection':lambda d: op.compute_turbulent_convection(d, self.uiuj),
         }
 
@@ -935,16 +954,16 @@ class TurbulenceStatsPipeline:
             self.statistics.append(TurbulentKineticEnergy())
 
         if self.config.temp_on:
-            self.statistics.append(Temperature(self.config.norm_temp_by_ref_temp, self.config.ref_temp))
+            self.statistics.append(Temperature(self.config.norm_temp_by_ref_temp, self.config.ref_temp, self.config.cases))
 
         # TKE Budget terms — single computer, thin wrappers per term
-        tke_budget_enabled = (self.config.tke_budget_on or self.config.tke_production_on or
-                              self.config.tke_dissipation_on or self.config.tke_convection_on or
-                              self.config.tke_viscous_diffusion_on or self.config.tke_pressure_transport_on or
-                              self.config.tke_turbulent_diffusion_on)
+        re_stress_budget_enabled = (self.config.re_stress_budget_on or self.config.production_on or
+                              self.config.dissipation_on or self.config.convection_on or
+                              self.config.viscous_diffusion_on or self.config.pressure_transport_on or
+                              self.config.turbulent_diffusion_on)
 
         self.budget_computer = None
-        if tke_budget_enabled:
+        if re_stress_budget_enabled:
             self.budget_computer = TkeBudgetComputer(self.config)
             for _flag, term_name, label in self.budget_computer.enabled_terms:
                 self.statistics.append(TkeBudgetTerm(term_name, label, self.budget_computer))
@@ -1040,11 +1059,11 @@ class TurbulenceStatsPipeline:
         grouped: Dict[str, List] = {
             'ReStresses': [],
             'Profiles': [],
-            'TkeBudget': []
+            'ReStressBudget': []
         }
         for stat in self.statistics:
             if isinstance(stat, TkeBudgetTerm):
-                grouped['TkeBudget'].append(stat)
+                grouped['ReStressBudget'].append(stat)
             elif isinstance(stat, ReStresses):
                 grouped['ReStresses'].append(stat)
             elif isinstance(stat, Profiles):
@@ -1264,7 +1283,7 @@ class TurbulencePlotter:
 
     def _plot_budget_figure(self, statistics, title: str):
         """Plot all TKE budget terms on a single axes."""
-        component = self.config.Re_stress_component
+        component = self.config.re_stress_component
         fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
         fig.canvas.manager.set_window_title(f'{title} ({component})')
 
