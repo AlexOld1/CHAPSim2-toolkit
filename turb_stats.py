@@ -1211,7 +1211,7 @@ class TurbulencePlotter:
         class_titles = {
             'ReStresses': 'Reynolds Stresses',
             'Profiles': 'Profiles',
-            'TkeBudget': 'TKE Budget'
+            'ReStressBudget': 'TKE Budget'
         }
 
         for class_name, stats_list in grouped_statistics.items():
@@ -1220,18 +1220,21 @@ class TurbulencePlotter:
 
             # Y-direction (wall-normal) profile figures
             if self.config.profile_direction in ('y', 'both'):
-                fig = self._plot_class_figure(stats_list, class_titles[class_name], reference_data)
+                class_title = class_titles.get(class_name, class_name)
+                fig = self._plot_class_figure(stats_list, class_title, reference_data)
                 figures[class_name] = fig
 
             # X-direction (streamwise) profile figures
             if self.config.profile_direction in ('x', 'both'):
-                x_fig = self._plot_x_profile_figure(stats_list, class_titles[class_name])
+                class_title = class_titles.get(class_name, class_name)
+                x_fig = self._plot_x_profile_figure(stats_list, class_title)
                 if x_fig is not None:
                     figures[f'{class_name}_x_profile'] = x_fig
 
             # Optional 2-D surface contour figures
             if self.config.surface_plot_on:
-                surf_figs = self._plot_surface_figures(stats_list, class_titles[class_name])
+                class_title = class_titles.get(class_name, class_name)
+                surf_figs = self._plot_surface_figures(stats_list, class_title)
                 for key, sfig in surf_figs.items():
                     figures[key] = sfig
 
@@ -1292,7 +1295,9 @@ class TurbulencePlotter:
             ax.set_title(f'{stat.label}')
             ax.set_ylabel(f"Normalised {stat.name.replace('_', ' ')}")
             ax.grid(True)
-            ax.legend(fontsize='small')
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(fontsize='small')
             if row == nrows - 1:
                 ax.set_xlabel('$y^+$')
 
@@ -1328,7 +1333,9 @@ class TurbulencePlotter:
             ax.set_xlabel('$y$')
         ax.set_ylabel('Budget term magnitude')
         ax.grid(True)
-        ax.legend(fontsize='small')
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(fontsize='small')
         return fig
 
     def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, TkeBudget]],
