@@ -103,38 +103,6 @@ def extract_slice(data_3d, plane, index, grid_info):
     return slice_data, coord1, coord2, axis_labels
 
 
-def apply_x_crop(slice_data, coord1, x_crop):
-    """
-    Apply x-direction cropping to slice data.
-
-    Args:
-        slice_data: 2D numpy array
-        coord1: x-coordinates array
-        x_crop: tuple of (x_min, x_max) or None
-
-    Returns:
-        cropped_data: cropped 2D array
-        cropped_coord1: cropped x-coordinates
-    """
-    if x_crop is None:
-        return slice_data, coord1
-
-    x_min, x_max = x_crop
-    # Find indices within the crop range
-    mask = (coord1 >= x_min) & (coord1 <= x_max)
-    indices = np.where(mask)[0]
-
-    if len(indices) == 0:
-        print(f"Warning: No data points in x range [{x_min}, {x_max}]")
-        return slice_data, coord1
-
-    i_start, i_end = indices[0], indices[-1] + 1
-    cropped_coord1 = coord1[i_start:i_end]
-    cropped_data = slice_data[:, i_start:i_end]
-
-    return cropped_data, cropped_coord1
-
-
 def get_slice_location(grid_info, plane, index):
     """Get the physical location of the slice."""
     if plane == 'xy':
@@ -868,7 +836,7 @@ def main():
                 # Squeeze any singleton dimensions
                 slice_data = np.squeeze(slice_data)
                 if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
-                    slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                    slice_data, coord1 = ut.apply_x_crop(slice_data, coord1, slice_config['x_crop'])
                 slices_data.append((variable, slice_data))
                 print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
 
@@ -888,7 +856,7 @@ def main():
                 slice_data = np.squeeze(data[variable])
                 c1, c2 = coord1, coord2
                 if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
-                    slice_data, c1 = apply_x_crop(slice_data, c1, slice_config['x_crop'])
+                    slice_data, c1 = ut.apply_x_crop(slice_data, c1, slice_config['x_crop'])
 
                 save_path = None
                 if slice_config['save_fig'] and slice_config['save_dir']:
@@ -929,7 +897,7 @@ def main():
 
                 # Apply x-direction cropping if specified (only for xy and xz planes)
                 if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                    slice_data, coord1_cropped = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                    slice_data, coord1_cropped = ut.apply_x_crop(slice_data, coord1, slice_config['x_crop'])
                     coord1 = coord1_cropped
 
                 slices_data.append((variable, slice_data))
@@ -965,7 +933,7 @@ def main():
 
                 # Apply x-direction cropping if specified (only for xy and xz planes)
                 if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                    slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                    slice_data, coord1 = ut.apply_x_crop(slice_data, coord1, slice_config['x_crop'])
 
                 # Build save path for this variable
                 save_path = None
@@ -1027,7 +995,7 @@ def main():
                         s_data = np.squeeze(data[variable])
                         c1 = coord1
                         if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
-                            s_data, c1 = apply_x_crop(s_data, c1, slice_config['x_crop'])
+                            s_data, c1 = ut.apply_x_crop(s_data, c1, slice_config['x_crop'])
                         slices_data.append((variable, s_data))
                         print(f"\n{variable}: min={np.nanmin(s_data):.4e}, max={np.nanmax(s_data):.4e}, mean={np.nanmean(s_data):.4e}")
                     save_path = None
@@ -1044,7 +1012,7 @@ def main():
                         s_data = np.squeeze(data[variable])
                         c1, c2 = coord1, coord2
                         if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
-                            s_data, c1 = apply_x_crop(s_data, c1, slice_config['x_crop'])
+                            s_data, c1 = ut.apply_x_crop(s_data, c1, slice_config['x_crop'])
                         save_path = None
                         if slice_config['save_fig'] and slice_config['save_dir']:
                             save_path = os.path.join(slice_config['save_dir'], f"{variable}_{slice_label}_slice.png")
@@ -1073,7 +1041,7 @@ def main():
                             var_data, slice_config['plane'], slice_config['index'], grid_info
                         )
                         if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                            slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                            slice_data, coord1 = ut.apply_x_crop(slice_data, coord1, slice_config['x_crop'])
                         slices_data.append((variable, slice_data))
                         print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
 
@@ -1094,7 +1062,7 @@ def main():
                             var_data, slice_config['plane'], slice_config['index'], grid_info
                         )
                         if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
-                            slice_data, coord1 = apply_x_crop(slice_data, coord1, slice_config['x_crop'])
+                            slice_data, coord1 = ut.apply_x_crop(slice_data, coord1, slice_config['x_crop'])
                         save_path = None
                         if slice_config['save_fig'] and slice_config['save_dir']:
                             filename = f"{variable}_{slice_config['plane']}_slice.png"

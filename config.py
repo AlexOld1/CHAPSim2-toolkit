@@ -22,6 +22,7 @@ temp_on = True
 tke_on = True
 profile_direction = 'y' # 'y' (wall-normal), 'x' (streamwise), or 'both'
 slice_coords = '' # y-profiles: x coords for slices, e.g. '0.5,1.0' (blank = streamwise avg)
+x_crop = '' # x-range crop for 2D visu data, e.g. '0.0,1.0' (blank = full x-range)
 x_profile_y_coords = '' # x-profiles: y coords for slices, e.g. '0.0,0.5' (blank = channel centreline)
 surface_plot_on = False # Plot 2D (y,x) surface contour maps of each statistic (requires 2D data)
 

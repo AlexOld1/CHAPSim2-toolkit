@@ -39,6 +39,7 @@ class Config:
     tke_on: bool
     profile_direction: str
     slice_coords: str
+    x_crop: str
     x_profile_y_coords: str
     surface_plot_on: bool
     u_prime_sq_on: bool
@@ -100,6 +101,7 @@ class Config:
             v_prime_sq_on=getattr(config_module, 'v_prime_sq_on', False),
             profile_direction=getattr(config_module, 'profile_direction', 'y'),
             slice_coords=getattr(config_module, 'slice_coords', ''),
+            x_crop=getattr(config_module, 'x_crop', ''),
             x_profile_y_coords=getattr(config_module, 'x_profile_y_coords', ''),
             surface_plot_on=getattr(config_module, 'surface_plot_on', False),
             re_stress_budget_on=getattr(config_module, 're_stress_budget_on', False),
@@ -282,7 +284,8 @@ def create_data_loader(config: Config, data_types: List[str] = None):
             data_types=data_types,
             average_z=config.average_z_direction,
             average_x=config.average_x_direction,
-            slice_label=config.slice_label if config.slice_label else None
+            slice_label=config.slice_label if config.slice_label else None,
+            x_crop=config.x_crop
         )
     elif fmt in ['dat', 'text']:
         print("Using text (.dat) data loader...")
@@ -358,7 +361,7 @@ class TurbulenceXDMFData:
 
     def __init__(self, folder_path: str, cases: List[str], timesteps: List[str],
                  data_types: List[str] = None, average_z: bool = True, average_x: bool = False,
-                 slice_label: str = None):
+                 slice_label: str = None, x_crop: str = ''):
         self.folder_path = folder_path
         self.cases = cases
         self.timesteps = timesteps
@@ -371,6 +374,33 @@ class TurbulenceXDMFData:
         self.grid_info: Dict = {}
         self.y_coords: Optional[np.ndarray] = None
         self.x_coords: Optional[np.ndarray] = None
+        try:
+            self.x_crop: Optional[Tuple[float, float]] = ut.parse_x_crop_input(x_crop)
+        except ValueError:
+            self.x_crop = None
+            print("Invalid x_crop in config. Using full x-range.")
+
+    def _apply_x_crop_to_arrays(self, arrays_for_key: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        """Apply optional x-crop once to all compatible arrays for a case/timestep."""
+        if self.x_crop is None or self.x_coords is None:
+            return arrays_for_key
+
+        cropped_arrays: Dict[str, np.ndarray] = {}
+        cropped_x_coords = None
+
+        for name, values in arrays_for_key.items():
+            if values.ndim >= 2 and values.shape[1] in (len(self.x_coords), len(self.x_coords) - 1):
+                cropped_values, candidate_x = ut.apply_x_crop(values, self.x_coords, self.x_crop)
+                cropped_arrays[name] = cropped_values
+                if cropped_x_coords is None and candidate_x is not None:
+                    cropped_x_coords = candidate_x
+            else:
+                cropped_arrays[name] = values
+
+        if cropped_x_coords is not None:
+            self.x_coords = cropped_x_coords
+
+        return cropped_arrays
 
     def load_all(self) -> None:
         """Load all XDMF files for all cases and timesteps"""
@@ -433,8 +463,8 @@ class TurbulenceXDMFData:
                     else:
                         self.x_coords = np.linspace(x_nodes.min(), x_nodes.max(), nx)
 
-            # Store arrays as native numpy arrays (no 3-column conversion)
-            self.data[key] = dict(arrays[key])
+            # Apply optional x-crop once at load stage
+            self.data[key] = self._apply_x_crop_to_arrays(dict(arrays[key]))
             print(f"Loaded {len(self.data[key])} variables from XDMF files for {case}, {timestep}")
         else:
             print(f'No arrays extracted from XDMF files for {case}, {timestep}')
@@ -685,7 +715,6 @@ class StreamwiseVelocity(Profiles):
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         return op.read_profile(data_dict['u1'])
 
-
 class Temperature(Profiles):
     """Temperature profile"""
 
@@ -719,7 +748,6 @@ class Temperature(Profiles):
             return op.read_profile(data_dict['T'])
         else:
             return op.read_profile(data_dict['T']) * float(self.ref_temps[0])
-
 
 class TurbulentKineticEnergy(Profiles):
     """Turbulent Kinetic Energy (TKE)"""
@@ -1090,7 +1118,6 @@ class TurbulencePlotter:
         self.config = config
         self.plot_config = plot_config
         self.data_loader = data_loader
-        self._slice_indices: Optional[List[Tuple[int, float]]] = None  # (index, actual_x)
 
     # ------------------------------------------------------------------
     # Plane / profile extraction helpers
@@ -1103,21 +1130,16 @@ class TurbulencePlotter:
 
     def _get_slice_indices(self) -> List[Tuple[int, float]]:
         """Return list of (x-index, actual_x_value) for requested slices."""
-        if self._slice_indices is not None:
-            return self._slice_indices
-
         x_coords = getattr(self.data_loader, 'x_coords', None)
         requested = self._parse_slice_coords()
         if not requested or x_coords is None:
-            self._slice_indices = []
-            return self._slice_indices
+            return []
 
         indices = []
         for xc in requested:
             idx = int(np.argmin(np.abs(x_coords - xc)))
             indices.append((idx, float(x_coords[idx])))
-        self._slice_indices = indices
-        return self._slice_indices
+        return indices
 
     def _extract_profiles(self, values: np.ndarray) -> List[Tuple[str, np.ndarray]]:
         """Extract 1-D wall-normal profiles from (possibly 2-D) data.

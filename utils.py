@@ -252,6 +252,71 @@ def slice_axis_info(slice_label):
         }
     return None
 
+
+def parse_x_crop_input(text):
+    """Parse crop input string to ``(x_min, x_max)``.
+
+    Accepted format: ``"x_min,x_max"``.
+    Returns ``None`` for blank input.
+    """
+    if text is None:
+        return None
+
+    value = str(text).strip()
+    if not value:
+        return None
+
+    parts = [p.strip() for p in value.split(',') if p.strip()]
+    if len(parts) != 2:
+        raise ValueError("Expected format 'x_min,x_max'")
+
+    x_min, x_max = float(parts[0]), float(parts[1])
+    if x_min > x_max:
+        x_min, x_max = x_max, x_min
+    return x_min, x_max
+
+
+def apply_x_crop(data, x_coords, x_crop):
+    """Crop array data along the last axis using an x-range.
+
+    Args:
+        data: ndarray to crop (1-D/2-D/3-D ...). Cropping is applied on axis ``-1``.
+        x_coords: x-coordinate array (cell-centres ``nx`` or edges ``nx+1``).
+        x_crop: tuple ``(x_min, x_max)`` or ``None``.
+
+    Returns:
+        tuple: ``(cropped_data, cropped_x_coords)``
+    """
+    if x_crop is None or x_coords is None:
+        return data, x_coords
+
+    x = np.asarray(x_coords)
+    nx = data.shape[-1]
+    x_min, x_max = x_crop
+
+    if x.size == nx:
+        centres = x
+        use_edges = False
+    elif x.size == nx + 1:
+        centres = 0.5 * (x[:-1] + x[1:])
+        use_edges = True
+    else:
+        return data, x_coords
+
+    idx = np.where((centres >= x_min) & (centres <= x_max))[0]
+    if idx.size == 0:
+        print(f"Warning: No data points in x range [{x_min}, {x_max}]")
+        return data, x_coords
+
+    i0, i1 = int(idx[0]), int(idx[-1] + 1)
+    cropped_data = np.take(data, indices=np.arange(i0, i1), axis=-1)
+    if use_edges:
+        cropped_x = x[i0:i1 + 1]
+    else:
+        cropped_x = x[i0:i1]
+
+    return cropped_data, cropped_x
+
 # =====================================================================================================================================================
 # XDMF READING UTILITIES
 # =====================================================================================================================================================

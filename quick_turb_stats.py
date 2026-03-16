@@ -136,7 +136,7 @@ def extract_y_profile(data_3d, grid_info):
     return profile
 
 
-def compute_reynolds_stresses(data, grid_info):
+def compute_reynolds_stresses(data, grid_info, x_crop=None):
     """
     Compute Reynolds stresses from time-space averaged data.
     Handles prefixes (tsp_avg_, t_avg_)
@@ -144,6 +144,16 @@ def compute_reynolds_stresses(data, grid_info):
     results = {}
 
     # Map variable names - try different conventions and prefixes
+    x_coords = grid_info.get('grid_x', None) if grid_info else None
+
+    def crop_x_if_needed(values):
+        if x_crop is None or values is None or values.ndim < 2 or x_coords is None:
+            return values
+        if values.shape[-1] not in (len(x_coords), len(x_coords) - 1):
+            return values
+        cropped, _ = ut.apply_x_crop(values, x_coords, x_crop)
+        return cropped
+
     def find_var(base_names):
         # Try with prefixes first (tsp_avg_, t_avg_), then without
         prefixes = ['tsp_avg_', 't_avg_', '']
@@ -151,7 +161,7 @@ def compute_reynolds_stresses(data, grid_info):
             for name in base_names:
                 full_name = f'{prefix}{name}'
                 if full_name in data:
-                    return extract_y_profile(data[full_name], grid_info)
+                    return extract_y_profile(crop_x_if_needed(data[full_name]), grid_info)
         return None
 
     # Velocity components
@@ -462,6 +472,14 @@ def get_user_input():
     half_input = input("Plot half channel? (y/n) [n]: ").strip().lower()
     half_channel = half_input == 'y'
 
+    x_crop = None
+    x_crop_input = input("Optional x-crop range x_min,x_max [none]: ").strip()
+    if x_crop_input:
+        try:
+            x_crop = ut.parse_x_crop_input(x_crop_input)
+        except ValueError:
+            print("Invalid x-crop format. Using full x-range.")
+
     # Save options
     save_input = input("Save figures? (y/n) [y]: ").strip().lower()
     save_fig = save_input != 'n'
@@ -479,6 +497,7 @@ def get_user_input():
         'Re': Re,
         'ref_temp': ref_temp,
         'half_channel': half_channel,
+        'x_crop': x_crop,
         'save_fig': save_fig,
         'display_fig': display_fig,
         'slice_label': slice_label,
@@ -521,7 +540,7 @@ def main():
     print("Computing statistics...")
     print("=" * 60)
 
-    results = compute_reynolds_stresses(data, grid_info)
+    results = compute_reynolds_stresses(data, grid_info, x_crop=config.get('x_crop'))
 
     if not results:
         print("Error: Could not compute any statistics from loaded data.")
