@@ -85,8 +85,20 @@ def _parse_xdmf_xml(xml_content, xdmf_path=""):
 # TEXT DATA UTILITIES
 # =====================================================================================================================================================
 
+def case_path(folder_path, case):
+    """Build a normalised case path from folder and case inputs."""
+    base = os.path.expanduser(os.path.expandvars(str(folder_path).strip()))
+    case_name = str(case).strip().strip('/\\')
+    if not base:
+        return case_name
+    return os.path.normpath(os.path.join(base, case_name))
+
 def data_filepath(folder_path, case, quantity, timestep):
-    return f'{folder_path}{case}/1_data/domain1_tsp_avg_{quantity}_{timestep}.dat'
+    return os.path.join(
+        case_path(folder_path, case),
+        '1_data',
+        f'domain1_tsp_avg_{quantity}_{timestep}.dat'
+    )
 
 def load_ts_avg_data(data_filepath):
     try:
@@ -112,13 +124,14 @@ def visu_file_paths(folder_path, case, timestep):
     in 1_data/ and aren't available as XDMF.  Only instantaneous and
     t_avg data have XDMF files in 2_visu/.
     """
+    case_dir = case_path(folder_path, case)
     file_names = [
-        f'{folder_path}{case}/2_visu/domain1_flow_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_t_avg_flow_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_thermo_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_t_avg_thermo_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_mhd_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_t_avg_mhd_{timestep}.xdmf',
+        os.path.join(case_dir, '2_visu', f'domain1_flow_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_t_avg_flow_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_thermo_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_t_avg_thermo_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_mhd_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_t_avg_mhd_{timestep}.xdmf'),
     ]
     return file_names
 
@@ -187,16 +200,17 @@ def visu_slice_file_paths(folder_path, case, timestep, slice_label):
     Returns:
         list of file paths
     """
+    case_dir = case_path(folder_path, case)
     file_names = [
-        f'{folder_path}{case}/2_visu/domain1_flow_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_t_avg_flow_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_tsp_avg_flow_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_thermo_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_t_avg_thermo_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_tsp_avg_thermo_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_mhd_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_t_avg_mhd_{slice_label}_{timestep}.xdmf',
-        f'{folder_path}{case}/2_visu/domain1_tsp_avg_mhd_{slice_label}_{timestep}.xdmf',
+        os.path.join(case_dir, '2_visu', f'domain1_flow_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_t_avg_flow_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_tsp_avg_flow_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_thermo_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_t_avg_thermo_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_tsp_avg_thermo_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_mhd_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_t_avg_mhd_{slice_label}_{timestep}.xdmf'),
+        os.path.join(case_dir, '2_visu', f'domain1_tsp_avg_mhd_{slice_label}_{timestep}.xdmf'),
     ]
     return file_names
 

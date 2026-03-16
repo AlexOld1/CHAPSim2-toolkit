@@ -9,6 +9,7 @@ from dataclasses import dataclass
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
+import hashlib
 import math
 import os
 from tqdm import tqdm
@@ -144,42 +145,43 @@ class PlotConfig:
     colors_blck: Dict[str, str] = None
     stat_labels: Dict[str, str] = None
     budget_colors: Dict[str, str] = None
+    visible_palette: List[str] = None
 
     def __post_init__(self):
         if self.colors_1 is None:
             self.colors_1 = {
-                'ux_velocity': 'b',
-                'u_prime_sq': 'r',
-                'u_prime_v_prime': 'g',
-                'w_prime_sq': 'c',
-                'v_prime_sq': 'm',
+                'ux_velocity': '#1f77b4',
+                'u_prime_sq': '#d62728',
+                'u_prime_v_prime': '#2ca02c',
+                'w_prime_sq': '#9467bd',
+                'v_prime_sq': '#8c564b',
             }
 
         if self.colors_2 is None:
             self.colors_2 = {
-                'ux_velocity': 'r',
-                'u_prime_sq': 'orange',
-                'u_prime_v_prime': 'lime',
-                'w_prime_sq': 'b',
-                'v_prime_sq': 'purple',
+                'ux_velocity': '#e41a1c',
+                'u_prime_sq': '#ff7f00',
+                'u_prime_v_prime': '#4daf4a',
+                'w_prime_sq': '#377eb8',
+                'v_prime_sq': '#984ea3',
             }
 
         if self.colors_3 is None:
             self.colors_3 = {
-                'ux_velocity': 'indigo',
-                'u_prime_sq': 'maroon',
-                'u_prime_v_prime': 'olive',
-                'w_prime_sq': 'navy',
-                'v_prime_sq': 'deeppink',
+                'ux_velocity': '#332288',
+                'u_prime_sq': '#882255',
+                'u_prime_v_prime': '#117733',
+                'w_prime_sq': '#004488',
+                'v_prime_sq': '#aa4499',
             }
 
         if self.colors_4 is None:
             self.colors_4 = {
-                'ux_velocity': 'magenta',
-                'u_prime_sq': 'peru',
-                'u_prime_v_prime': 'lightgreen',
-                'w_prime_sq': 'teal',
-                'v_prime_sq': 'indigo',
+                'ux_velocity': '#c51b7d',
+                'u_prime_sq': '#a6611a',
+                'u_prime_v_prime': '#1b9e77',
+                'w_prime_sq': '#0c7c59',
+                'v_prime_sq': '#5e3c99',
             }
 
         if self.colors_blck is None:
@@ -193,13 +195,21 @@ class PlotConfig:
 
         if self.budget_colors is None:
             self.budget_colors = {
-                'production': 'red',
-                'dissipation': 'blue',
-                'mean_convection': 'green',
-                'viscous_diffusion': 'orange',
-                'pressure_transport': 'purple',
-                'turbulent_diffusion': 'cyan',
+                'production': '#d62728',
+                'dissipation': '#1f77b4',
+                'mean_convection': '#2ca02c',
+                'viscous_diffusion': '#ff7f0e',
+                'pressure_transport': '#9467bd',
+                'turbulent_diffusion': '#17becf',
             }
+
+        if self.visible_palette is None:
+            self.visible_palette = [
+                '#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#ff7f0e',
+                '#8c564b', '#e41a1c', '#377eb8', '#4daf4a', '#984ea3',
+                '#332288', '#117733', '#882255', '#44aa99', '#aa4499',
+                '#88ccee', '#ddcc77', '#cc6677', '#661100', '#0c7c59'
+            ]
 
         if self.stat_labels is None:
             self.stat_labels = {
@@ -1283,7 +1293,7 @@ class TurbulencePlotter:
 
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
-                    color = self._get_color(case, stat.name)
+                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{case.replace("_", " = ")}{suffix}'
                     self._plot_line(ax, y_plus, profile, label, color)
 
@@ -1315,13 +1325,13 @@ class TurbulencePlotter:
         fig.canvas.manager.set_window_title(f'{title} ({component})')
 
         for stat in statistics:
-            color = self.plot_config.budget_colors.get(stat.name, 'black')
             for (case, timestep), values in stat.processed_results.items():
                 y_plus = self._get_y_plus(case, timestep)
                 if y_plus is None:
                     continue
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
+                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{stat.label}{suffix}'
                     self._plot_line(ax, y_plus, profile, label, color)
 
@@ -1355,7 +1365,7 @@ class TurbulencePlotter:
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
                     # Get plotting aesthetics
-                    color = self._get_color(case, stat.name)
+                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{stat.label}, {case.replace("_", " = ")}{suffix}'
 
                     # Plot main data
@@ -1416,7 +1426,7 @@ class TurbulencePlotter:
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
                     # Get plotting aesthetics
-                    color = self._get_color(case, stat.name)
+                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{case.replace("_", " = ")}{suffix}'
 
                     # Plot main data
@@ -1523,7 +1533,7 @@ class TurbulencePlotter:
             for (case, timestep), values in stat.processed_results.items():
                 profiles = self._extract_x_profiles(values)
                 for suffix, profile in profiles:
-                    color = self._get_color(case, stat.name)
+                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{case.replace("_", " = ")}{suffix}'
                     ax.plot(x_coords, profile, label=label, color=color)
             ax.set_title(stat.label)
@@ -1624,16 +1634,17 @@ class TurbulencePlotter:
         else:
             return y
 
-    def _get_color(self, case: str, stat_name: str) -> str:
-        """Get colour for a case and statistic"""
-        # Budget terms use dedicated budget color palette
-        if stat_name in self.plot_config.budget_colors:
-            return self.plot_config.budget_colors[stat_name]
-        if len(self.config.cases) <= len(self.plot_config.colours) and stat_name in self.plot_config.stat_labels:
-            colour_set = ut.get_col(case, self.config.cases, self.plot_config.colours)
-            return colour_set.get(stat_name, 'black')
-        else:
-            return np.random.choice(list(mcolors.CSS4_COLORS.keys()))
+    def _get_color(self, key: str, stat_name: Optional[str] = None) -> str:
+        """Get a visible default colour for a plotted series.
+
+        Colours are chosen from a shuffled high-contrast palette using a
+        stable hash of the series key, so different slice/profile lines get
+        different colours while remaining consistent between runs.
+        """
+        palette = self.plot_config.visible_palette
+        digest = hashlib.md5(key.encode('utf-8')).hexdigest()
+        index = int(digest[:8], 16) % len(palette)
+        return palette[index]
 
     def save_figure(self, fig, suffix: str = '') -> None:
         """Save figure to file"""
