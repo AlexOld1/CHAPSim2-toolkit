@@ -7,6 +7,8 @@ import os
 plt.rcParams['agg.path.chunksize'] = 10000 # Configure matplotlib for better performance with large datasets
 plt.rcParams['path.simplify_threshold'] = 1.0
 
+MAX_ABS_VALUE = 1e5
+
 # ====================================================================================================================================================
 # Robust y-limit calculation (IQR-based) for diverged simulations
 # ====================================================================================================================================================
@@ -139,6 +141,36 @@ def plot_with_avg(ax, time, data, label, color, window):
                 linewidth=0.5, color='black', linestyle='--', alpha=0.5)
 
 
+def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE):
+    """Load monitor data and drop diverged/invalid rows.
+
+    Rows are skipped when:
+      - Any column is NaN/Inf
+      - Any non-time column has abs(value) > max_abs_value
+    """
+    data = np.genfromtxt(file_path, skip_header=skiprows, invalid_raise=False, ndmin=2)
+
+    if data.size == 0 or data.shape[1] == 0:
+        print(f"Warning: No parseable data in {os.path.basename(file_path)}")
+        return np.empty((0, 0))
+
+    finite_mask = np.all(np.isfinite(data), axis=1)
+    if data.shape[1] > 1:
+        within_limit = np.all(np.abs(data[:, 1:]) <= max_abs_value, axis=1)
+    else:
+        within_limit = np.ones(data.shape[0], dtype=bool)
+
+    keep_mask = finite_mask & within_limit
+    skipped = np.count_nonzero(~keep_mask)
+    if skipped > 0:
+        print(
+            f"Skipped {skipped} diverged/invalid rows in {os.path.basename(file_path)} "
+            f"(non-time |value| > {max_abs_value:.0e} or non-finite)."
+        )
+
+    return data[keep_mask]
+
+
 # ====================================================================================================================================================
 # Input parameters
 # ====================================================================================================================================================
@@ -200,8 +232,11 @@ blk_files = ['domain1_monitor_metrics_history.log', 'domain1_monitor_change_hist
  
 if plt_pts:
     for file in pt_files:
-        
-        data = np.loadtxt(path+file,skiprows=3)
+        data = load_monitor_data(path + file, skiprows=3)
+
+        if data.size == 0:
+            print(f"Skipping {file}: no valid data after filtering.")
+            continue
         
         data = data[::sample_factor] # sample data for plotting
         print(f'Plotting {len(data)} points for {file}...')
@@ -282,7 +317,11 @@ if plt_pts:
 
 if plt_bulk:
     for file in blk_files:
-        blk_data = np.loadtxt(path+file, skiprows=2)
+        blk_data = load_monitor_data(path + file, skiprows=2)
+
+        if blk_data.size == 0:
+            print(f"Skipping {file}: no valid data after filtering.")
+            continue
         
         blk_data = blk_data[::sample_factor] # sample data for plotting
 
