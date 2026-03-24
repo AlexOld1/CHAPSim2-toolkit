@@ -758,6 +758,9 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
                 x_crop = (x_min, x_max)
                 print(f"  -> Cropping x from {x_min:.4f} to {x_max:.4f}")
 
+    interp_input = input("\nInterpolate cell data to point data? (y/n) [n]: ").strip().lower()
+    interpolate_cell_to_point = interp_input == 'y'
+
     # Colormap selection
     print("\nColormaps: viridis, plasma, inferno, magma, cividis, RdBu_r, coolwarm, jet")
     cmap = input("Colormap [viridis]: ").strip()
@@ -805,9 +808,6 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
 
     display_input = input("Display figures? (y/n) [y]: ").strip().lower()
     display = display_input != 'n'
-
-    interp_input = input("\nInterpolate cell data to point data? (y/n) [n]: ").strip().lower()
-    interpolate_cell_to_point = interp_input == 'y'
 
     return {
         'variables': selected_vars,
