@@ -139,23 +139,116 @@ def infer_data_location(data_shape, grid_info):
 
 
 def interpolate_cell_to_point_data(data):
-    """Interpolate cell-centred data to point centres by edge replication + averaging."""
-    interp = data
-    for axis in range(interp.ndim):
-        if interp.shape[axis] < 1:
-            return data
-
-        pad_width = [(0, 0)] * interp.ndim
-        pad_width[axis] = (1, 1)
-        padded = np.pad(interp, pad_width=pad_width, mode='edge')
-
-        slicer_lo = [slice(None)] * padded.ndim
-        slicer_hi = [slice(None)] * padded.ndim
-        slicer_lo[axis] = slice(0, -1)
-        slicer_hi[axis] = slice(1, None)
-        interp = 0.5 * (padded[tuple(slicer_lo)] + padded[tuple(slicer_hi)])
-
-    return interp
+    """
+    Interpolate cell-centred data to point centres (like ParaView's vtkCellDataToPointData).
+    
+    Each point value is the average of all adjacent cells. Interior points use all 2^ndim
+    neighboring cells; boundary points use only adjacent cells.
+    """
+    ndim = data.ndim
+    
+    if ndim == 1:
+        nc = data.shape[0]
+        result = np.zeros(nc + 1, dtype=data.dtype)
+        result[0] = data[0]
+        result[1:-1] = 0.5 * (data[0:-1] + data[1:])
+        result[-1] = data[-1]
+        return result
+    
+    elif ndim == 2:
+        ncy, ncx = data.shape
+        result = np.zeros((ncy + 1, ncx + 1), dtype=data.dtype)
+        
+        # Interior points: average of 4 adjacent cells
+        result[1:-1, 1:-1] = 0.25 * (
+            data[0:-1, 0:-1] + data[0:-1, 1:] +
+            data[1:, 0:-1] + data[1:, 1:]
+        )
+        
+        # Corners
+        result[0, 0] = data[0, 0]
+        result[0, -1] = data[0, -1]
+        result[-1, 0] = data[-1, 0]
+        result[-1, -1] = data[-1, -1]
+        
+        # Edges: average of 2 adjacent cells
+        result[0, 1:-1] = 0.5 * (data[0, 0:-1] + data[0, 1:])
+        result[-1, 1:-1] = 0.5 * (data[-1, 0:-1] + data[-1, 1:])
+        result[1:-1, 0] = 0.5 * (data[0:-1, 0] + data[1:, 0])
+        result[1:-1, -1] = 0.5 * (data[0:-1, -1] + data[1:, -1])
+        
+        return result
+    
+    elif ndim == 3:
+        ncz, ncy, ncx = data.shape
+        result = np.zeros((ncz + 1, ncy + 1, ncx + 1), dtype=data.dtype)
+        
+        # Interior points: average of 8 adjacent cells
+        result[1:-1, 1:-1, 1:-1] = 0.125 * (
+            data[0:-1, 0:-1, 0:-1] + data[0:-1, 0:-1, 1:] +
+            data[0:-1, 1:, 0:-1] + data[0:-1, 1:, 1:] +
+            data[1:, 0:-1, 0:-1] + data[1:, 0:-1, 1:] +
+            data[1:, 1:, 0:-1] + data[1:, 1:, 1:]
+        )
+        
+        # Corners: single cell value
+        result[0, 0, 0] = data[0, 0, 0]
+        result[0, 0, -1] = data[0, 0, -1]
+        result[0, -1, 0] = data[0, -1, 0]
+        result[0, -1, -1] = data[0, -1, -1]
+        result[-1, 0, 0] = data[-1, 0, 0]
+        result[-1, 0, -1] = data[-1, 0, -1]
+        result[-1, -1, 0] = data[-1, -1, 0]
+        result[-1, -1, -1] = data[-1, -1, -1]
+        
+        # Edges (z-parallel, y-parallel, x-parallel): average of 2 cells
+        result[0, 0, 1:-1] = 0.5 * (data[0, 0, 0:-1] + data[0, 0, 1:])
+        result[0, -1, 1:-1] = 0.5 * (data[0, -1, 0:-1] + data[0, -1, 1:])
+        result[-1, 0, 1:-1] = 0.5 * (data[-1, 0, 0:-1] + data[-1, 0, 1:])
+        result[-1, -1, 1:-1] = 0.5 * (data[-1, -1, 0:-1] + data[-1, -1, 1:])
+        
+        result[0, 1:-1, 0] = 0.5 * (data[0, 0:-1, 0] + data[0, 1:, 0])
+        result[0, 1:-1, -1] = 0.5 * (data[0, 0:-1, -1] + data[0, 1:, -1])
+        result[-1, 1:-1, 0] = 0.5 * (data[-1, 0:-1, 0] + data[-1, 1:, 0])
+        result[-1, 1:-1, -1] = 0.5 * (data[-1, 0:-1, -1] + data[-1, 1:, -1])
+        
+        result[1:-1, 0, 0] = 0.5 * (data[0:-1, 0, 0] + data[1:, 0, 0])
+        result[1:-1, 0, -1] = 0.5 * (data[0:-1, 0, -1] + data[1:, 0, -1])
+        result[1:-1, -1, 0] = 0.5 * (data[0:-1, -1, 0] + data[1:, -1, 0])
+        result[1:-1, -1, -1] = 0.5 * (data[0:-1, -1, -1] + data[1:, -1, -1])
+        
+        # Faces (4 cells): xy-faces, xz-faces, yz-faces
+        result[0, 1:-1, 1:-1] = 0.25 * (
+            data[0, 0:-1, 0:-1] + data[0, 0:-1, 1:] +
+            data[0, 1:, 0:-1] + data[0, 1:, 1:]
+        )
+        result[-1, 1:-1, 1:-1] = 0.25 * (
+            data[-1, 0:-1, 0:-1] + data[-1, 0:-1, 1:] +
+            data[-1, 1:, 0:-1] + data[-1, 1:, 1:]
+        )
+        
+        result[1:-1, 0, 1:-1] = 0.25 * (
+            data[0:-1, 0, 0:-1] + data[0:-1, 0, 1:] +
+            data[1:, 0, 0:-1] + data[1:, 0, 1:]
+        )
+        result[1:-1, -1, 1:-1] = 0.25 * (
+            data[0:-1, -1, 0:-1] + data[0:-1, -1, 1:] +
+            data[1:, -1, 0:-1] + data[1:, -1, 1:]
+        )
+        
+        result[1:-1, 1:-1, 0] = 0.25 * (
+            data[0:-1, 0:-1, 0] + data[0:-1, 1:, 0] +
+            data[1:, 0:-1, 0] + data[1:, 1:, 0]
+        )
+        result[1:-1, 1:-1, -1] = 0.25 * (
+            data[0:-1, 0:-1, -1] + data[0:-1, 1:, -1] +
+            data[1:, 0:-1, -1] + data[1:, 1:, -1]
+        )
+        
+        return result
+    
+    else:
+        raise ValueError(f"Unsupported number of dimensions: {ndim}")
 
 
 def process_data_arrays(data, selected_vars, grid_info, interpolate_cell_to_point=False):
