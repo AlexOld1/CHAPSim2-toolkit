@@ -103,6 +103,77 @@ def extract_slice(data_3d, plane, index, grid_info):
     return slice_data, coord1, coord2, axis_labels
 
 
+def infer_data_location(data_shape, grid_info):
+    """Infer whether array is point-centred or cell-centred from shape."""
+    if not isinstance(data_shape, tuple):
+        return 'unknown'
+
+    node_dims = grid_info.get('node_dimensions') if grid_info else None
+    cell_dims = grid_info.get('cell_dimensions') if grid_info else None
+
+    if node_dims and data_shape == tuple(node_dims):
+        return 'point'
+    if cell_dims and data_shape == tuple(cell_dims):
+        return 'cell'
+
+    # 2D slices can match one of the 3D plane projections.
+    if len(data_shape) == 2:
+        if node_dims:
+            node_2d_shapes = {
+                (node_dims[1], node_dims[2]),  # xy
+                (node_dims[0], node_dims[2]),  # xz
+                (node_dims[0], node_dims[1]),  # yz
+            }
+            if data_shape in node_2d_shapes:
+                return 'point'
+        if cell_dims:
+            cell_2d_shapes = {
+                (cell_dims[1], cell_dims[2]),  # xy
+                (cell_dims[0], cell_dims[2]),  # xz
+                (cell_dims[0], cell_dims[1]),  # yz
+            }
+            if data_shape in cell_2d_shapes:
+                return 'cell'
+
+    return 'unknown'
+
+
+def interpolate_cell_to_point_data(data):
+    """Interpolate cell-centred data to point centres by edge replication + averaging."""
+    interp = data
+    for axis in range(interp.ndim):
+        if interp.shape[axis] < 1:
+            return data
+
+        pad_width = [(0, 0)] * interp.ndim
+        pad_width[axis] = (1, 1)
+        padded = np.pad(interp, pad_width=pad_width, mode='edge')
+
+        slicer_lo = [slice(None)] * padded.ndim
+        slicer_hi = [slice(None)] * padded.ndim
+        slicer_lo[axis] = slice(0, -1)
+        slicer_hi[axis] = slice(1, None)
+        interp = 0.5 * (padded[tuple(slicer_lo)] + padded[tuple(slicer_hi)])
+
+    return interp
+
+
+def process_data_arrays(data, selected_vars, grid_info, interpolate_cell_to_point=False):
+    """Apply optional preprocessing steps to loaded arrays."""
+    processed = {}
+
+    for var in selected_vars:
+        arr = data[var]
+        if interpolate_cell_to_point and arr.ndim in (2, 3):
+            location = infer_data_location(arr.shape, grid_info)
+            if location == 'cell':
+                arr = interpolate_cell_to_point_data(arr)
+                print(f"  Interpolated {var}: cell -> point, new shape {arr.shape}")
+        processed[var] = arr
+
+    return processed
+
+
 def get_slice_location(grid_info, plane, index):
     """Get the physical location of the slice."""
     if plane == 'xy':
@@ -578,6 +649,9 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
     display_input = input("Display figures? (y/n) [y]: ").strip().lower()
     display = display_input != 'n'
 
+    interp_input = input("\nInterpolate cell data to point data? (y/n) [n]: ").strip().lower()
+    interpolate_cell_to_point = interp_input == 'y'
+
     return {
         'variables': selected_vars,
         'plane': axis_info['plane'] if axis_info else 'xz',
@@ -592,6 +666,7 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
         'combined_plot': combined_plot,
         'shared_scale': shared_scale,
         'x_crop': x_crop,
+        'interpolate_cell_to_point': interpolate_cell_to_point,
     }
 
 
@@ -742,6 +817,9 @@ def get_slice_config(var_metadata, grid_info):
     display_input = input("Display figures? (y/n) [y]: ").strip().lower()
     display = display_input != 'n'
 
+    interp_input = input("\nInterpolate cell data to point data? (y/n) [n]: ").strip().lower()
+    interpolate_cell_to_point = interp_input == 'y'
+
     return {
         'variables': selected_vars,
         'plane': plane,
@@ -756,6 +834,7 @@ def get_slice_config(var_metadata, grid_info):
         'combined_plot': combined_plot,
         'shared_scale': shared_scale,
         'x_crop': x_crop,
+        'interpolate_cell_to_point': interpolate_cell_to_point,
     }
 
 
@@ -810,6 +889,13 @@ def main():
     if not data:
         print("Error: Failed to load selected variables.")
         return
+
+    data = process_data_arrays(
+        data,
+        slice_config['variables'],
+        grid_info,
+        interpolate_cell_to_point=slice_config.get('interpolate_cell_to_point', False)
+    )
 
     print(f"\nLoaded {len(data)} variable(s)")
 
@@ -979,6 +1065,13 @@ def main():
             if not data:
                 print("Error: Failed to load selected variables.")
                 continue
+
+            data = process_data_arrays(
+                data,
+                slice_config['variables'],
+                grid_info,
+                interpolate_cell_to_point=slice_config.get('interpolate_cell_to_point', False)
+            )
 
             if is_2d_slice:
                 axis_info = ut.slice_axis_info(slice_label)

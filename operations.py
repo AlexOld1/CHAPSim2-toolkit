@@ -200,6 +200,7 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
         return val if val is not None else np.zeros_like(u1)
    
     pr = get_var('pr')
+    dens = get_var('f')
 
     # Mean velocity gradient tensor dU_i/dx_j  (shape: 3,3,...)
     du_dx = [[None]*3 for _ in range(3)]
@@ -302,22 +303,29 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     # ------------------------------------------------------------------
     # Pressure-strain correlation tensor  ⟨p' ∂u'ᵢ/∂xⱼ⟩
     #   = ⟨p ∂uᵢ/∂xⱼ⟩ − ⟨p⟩ ∂⟨uᵢ⟩/∂xⱼ
-    # The raw ⟨p ∂uᵢ/∂xⱼ⟩ is computed from time-averaged pu data as
-    # ∂⟨puᵢ⟩/∂xⱼ.
     # ------------------------------------------------------------------
-    pdudx_prime = {}
+    
+    prdu_names = {(0,0): 'prdu11', (0,1): 'prdu12', (0,2): 'prdu13',
+                    (1,0): 'prdu21', (1,1): 'prdu22', (1,2): 'prdu23',
+                    (2,0): 'prdu31', (2,1): 'prdu32', (2,2): 'prdu33'}
+
+    prdu = {}
+    for (i, j), name in prdu_names.items():
+        prdu[i, j] = get_var(name)
+
+    prdu_prime = {}
     for i in range(3):
         for j in range(3):
-            raw = grad_fns[j](pru[i])  # ∂⟨puᵢ⟩/∂xⱼ
-            if raw is not None:
-                pdudx_prime[i, j] = raw - pr * du_dx[i][j]
+
+            if prdu[i] is not None:
+                prdu_prime[i, j] = prdu[i] * du_dx[i][j]
             else:
-                pdudx_prime[i, j] = None
+                prdu_prime[i, j] = None
 
     pressure_strain_tensor = np.array([
-        [_or_zero(pdudx_prime[0,0]), _or_zero(pdudx_prime[0,1]), _or_zero(pdudx_prime[0,2])],
-        [_or_zero(pdudx_prime[1,0]), _or_zero(pdudx_prime[1,1]), _or_zero(pdudx_prime[1,2])],
-        [_or_zero(pdudx_prime[2,0]), _or_zero(pdudx_prime[2,1]), _or_zero(pdudx_prime[2,2])],
+        [_or_zero(prdu_prime[0,0]), _or_zero(prdu_prime[0,1]), _or_zero(prdu_prime[0,2])],
+        [_or_zero(prdu_prime[1,0]), _or_zero(prdu_prime[1,1]), _or_zero(prdu_prime[1,2])],
+        [_or_zero(prdu_prime[2,0]), _or_zero(prdu_prime[2,1]), _or_zero(prdu_prime[2,2])],
     ])
 
     # ------------------------------------------------------------------
@@ -401,6 +409,7 @@ def compute_TKE_components(xdmf_data_dict, y_coords, average_z=False, average_x=
     return {
         'U1': u1, 'U2': u2, 'U3': u3,
         'pr': pr,
+        'f' : dens,
         'TKE': tke,
         'mean_velocity_grad_tensor': mean_velocity_grad_tensor,
         'fluc_velocity_grad_tensor': fluc_velocity_grad_tensor,
@@ -517,12 +526,13 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total'):
     For total (trace): Π_kk = 2 * trace(S) = 2⟨p' ∂u'_k/∂x_k⟩ = 0
     by incompressibility (∂u'_k/∂x_k = 0).
     """
+    f = tke_comp_dict['f']
     S = tke_comp_dict['pressure_strain_tensor']
     if uiuj == 'total':
         return {'pressure_strain': 2.0 * np.einsum('ii...->...', S)}
     else:
         i, j = _parse_component(uiuj)
-        return {'pressure_strain': S[i, j] + S[j, i]}
+        return {'pressure_strain': (S[i, j] + S[j, i]) / f}
 
 def compute_buoyancy_term():
     return
