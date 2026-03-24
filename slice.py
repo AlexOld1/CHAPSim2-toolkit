@@ -254,6 +254,7 @@ def interpolate_cell_to_point_data(data):
 def process_data_arrays(data, selected_vars, grid_info, interpolate_cell_to_point=False):
     """Apply optional preprocessing steps to loaded arrays."""
     processed = {}
+    interpolated_vars = set()
 
     for var in selected_vars:
         arr = data[var]
@@ -261,10 +262,17 @@ def process_data_arrays(data, selected_vars, grid_info, interpolate_cell_to_poin
             location = infer_data_location(arr.shape, grid_info)
             if location == 'cell':
                 arr = interpolate_cell_to_point_data(arr)
+                interpolated_vars.add(var)
                 print(f"  Interpolated {var}: cell -> point, new shape {arr.shape}")
+            elif location == 'unknown':
+                print(
+                    f"  Warning: Could not determine data location for {var}. "
+                    f"node_dims={grid_info.get('node_dimensions')}, "
+                    f"cell_dims={grid_info.get('cell_dimensions')}"
+                )
         processed[var] = arr
 
-    return processed
+    return processed, interpolated_vars
 
 
 def get_slice_location(grid_info, plane, index):
@@ -287,7 +295,8 @@ def get_slice_location(grid_info, plane, index):
 
 def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
                cmap='viridis', vmin=None, vmax=None, symmetric=False,
-               slice_info="", save_path=None, display=True):
+               slice_info="", save_path=None, display=True,
+               smooth_point_data=False):
     """
     Plot a 2D slice with colorbar.
 
@@ -318,27 +327,53 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
     if vmax is None:
         vmax = np.nanmax(slice_data)
 
-    # Create meshgrid for pcolormesh
-    if len(coord1) == slice_data.shape[1]:
-        # Cell-centered data, need to create cell edges
-        dx = np.diff(coord1)
-        x_edges = np.concatenate([[coord1[0] - dx[0]/2],
-                                   coord1[:-1] + dx/2,
-                                   [coord1[-1] + dx[-1]/2]])
-    else:
-        x_edges = coord1
+    use_gouraud = (
+        smooth_point_data
+        and len(coord1) == slice_data.shape[1]
+        and len(coord2) == slice_data.shape[0]
+    )
 
-    if len(coord2) == slice_data.shape[0]:
-        dy = np.diff(coord2)
-        y_edges = np.concatenate([[coord2[0] - dy[0]/2],
-                                   coord2[:-1] + dy/2,
-                                   [coord2[-1] + dy[-1]/2]])
+    if use_gouraud:
+        x_points, y_points = np.meshgrid(coord1, coord2)
+        pcm = ax.pcolormesh(
+            x_points,
+            y_points,
+            slice_data,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            shading='gouraud'
+        )
     else:
-        y_edges = coord2
+        if len(coord1) == slice_data.shape[1]:
+            dx = np.diff(coord1)
+            x_edges = np.concatenate([
+                [coord1[0] - dx[0] / 2],
+                coord1[:-1] + dx / 2,
+                [coord1[-1] + dx[-1] / 2]
+            ])
+        else:
+            x_edges = coord1
 
-    # Plot
-    pcm = ax.pcolormesh(x_edges, y_edges, slice_data,
-                        cmap=cmap, vmin=vmin, vmax=vmax, shading='flat')
+        if len(coord2) == slice_data.shape[0]:
+            dy = np.diff(coord2)
+            y_edges = np.concatenate([
+                [coord2[0] - dy[0] / 2],
+                coord2[:-1] + dy / 2,
+                [coord2[-1] + dy[-1] / 2]
+            ])
+        else:
+            y_edges = coord2
+
+        pcm = ax.pcolormesh(
+            x_edges,
+            y_edges,
+            slice_data,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            shading='flat'
+        )
 
     cbar = fig.colorbar(pcm, ax=ax, label=variable_name)
 
@@ -367,7 +402,7 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
 
 def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
                          cmap='viridis', symmetric=False, shared_scale=False,
-                         save_path=None, display=True):
+                         save_path=None, display=True, point_data_vars=None):
     """
     Plot multiple 2D slices in a single figure with subplots.
 
@@ -399,23 +434,6 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
     elif ncols == 1:
         axs = axs.reshape(-1, 1)
 
-    # Create cell edges once (same for all variables)
-    if len(coord1) == slices_data[0][1].shape[1]:
-        dx = np.diff(coord1)
-        x_edges = np.concatenate([[coord1[0] - dx[0]/2],
-                                   coord1[:-1] + dx/2,
-                                   [coord1[-1] + dx[-1]/2]])
-    else:
-        x_edges = coord1
-
-    if len(coord2) == slices_data[0][1].shape[0]:
-        dy = np.diff(coord2)
-        y_edges = np.concatenate([[coord2[0] - dy[0]/2],
-                                   coord2[:-1] + dy/2,
-                                   [coord2[-1] + dy[-1]/2]])
-    else:
-        y_edges = coord2
-
     # Compute shared scale if requested
     plot_cmap = cmap
     if shared_scale:
@@ -445,8 +463,54 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
             vmin = np.nanmin(slice_data)
             vmax = np.nanmax(slice_data)
 
-        pcm = ax.pcolormesh(x_edges, y_edges, slice_data,
-                            cmap=plot_cmap, vmin=vmin, vmax=vmax, shading='flat')
+        use_gouraud = (
+            point_data_vars is not None
+            and var_name in point_data_vars
+            and len(coord1) == slice_data.shape[1]
+            and len(coord2) == slice_data.shape[0]
+        )
+
+        if use_gouraud:
+            x_points, y_points = np.meshgrid(coord1, coord2)
+            pcm = ax.pcolormesh(
+                x_points,
+                y_points,
+                slice_data,
+                cmap=plot_cmap,
+                vmin=vmin,
+                vmax=vmax,
+                shading='gouraud'
+            )
+        else:
+            if len(coord1) == slice_data.shape[1]:
+                dx = np.diff(coord1)
+                x_edges = np.concatenate([
+                    [coord1[0] - dx[0] / 2],
+                    coord1[:-1] + dx / 2,
+                    [coord1[-1] + dx[-1] / 2]
+                ])
+            else:
+                x_edges = coord1
+
+            if len(coord2) == slice_data.shape[0]:
+                dy = np.diff(coord2)
+                y_edges = np.concatenate([
+                    [coord2[0] - dy[0] / 2],
+                    coord2[:-1] + dy / 2,
+                    [coord2[-1] + dy[-1] / 2]
+                ])
+            else:
+                y_edges = coord2
+
+            pcm = ax.pcolormesh(
+                x_edges,
+                y_edges,
+                slice_data,
+                cmap=plot_cmap,
+                vmin=vmin,
+                vmax=vmax,
+                shading='flat'
+            )
 
         fig.colorbar(pcm, ax=ax, label=var_name)
         ax.set_xlabel(axis_labels[0])
@@ -983,7 +1047,7 @@ def main():
         print("Error: Failed to load selected variables.")
         return
 
-    data = process_data_arrays(
+    data, interpolated_vars = process_data_arrays(
         data,
         slice_config['variables'],
         grid_info,
@@ -1028,7 +1092,8 @@ def main():
                 slices_data, coord1, coord2, axis_labels, slice_info,
                 cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
                 shared_scale=slice_config['shared_scale'],
-                save_path=save_path, display=slice_config['display']
+                save_path=save_path, display=slice_config['display'],
+                point_data_vars=interpolated_vars
             )
         else:
             for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
@@ -1048,7 +1113,8 @@ def main():
                     vmin=slice_config['vmin'], vmax=slice_config['vmax'],
                     symmetric=slice_config['symmetric'],
                     slice_info=slice_info, save_path=save_path,
-                    display=slice_config['display']
+                    display=slice_config['display'],
+                    smooth_point_data=variable in interpolated_vars
                 )
     else:
         # 3D data — extract slice as before
@@ -1097,7 +1163,8 @@ def main():
                 symmetric=slice_config['symmetric'],
                 shared_scale=slice_config['shared_scale'],
                 save_path=save_path,
-                display=slice_config['display']
+                display=slice_config['display'],
+                point_data_vars=interpolated_vars
             )
         else:
             # Process each variable separately
@@ -1130,7 +1197,8 @@ def main():
                     symmetric=slice_config['symmetric'],
                     slice_info=slice_info,
                     save_path=save_path,
-                    display=slice_config['display']
+                    display=slice_config['display'],
+                    smooth_point_data=variable in interpolated_vars
                 )
 
     print("\n" + "=" * 60)
@@ -1159,7 +1227,7 @@ def main():
                 print("Error: Failed to load selected variables.")
                 continue
 
-            data = process_data_arrays(
+            data, interpolated_vars = process_data_arrays(
                 data,
                 slice_config['variables'],
                 grid_info,
@@ -1191,7 +1259,8 @@ def main():
                         slices_data, c1, coord2, axis_labels, slice_info,
                         cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
                         shared_scale=slice_config['shared_scale'], save_path=save_path,
-                        display=slice_config['display']
+                        display=slice_config['display'],
+                        point_data_vars=interpolated_vars
                     )
                 else:
                     for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
@@ -1207,7 +1276,8 @@ def main():
                             cmap=slice_config['cmap'], vmin=slice_config['vmin'],
                             vmax=slice_config['vmax'], symmetric=slice_config['symmetric'],
                             slice_info=slice_info, save_path=save_path,
-                            display=slice_config['display']
+                            display=slice_config['display'],
+                            smooth_point_data=variable in interpolated_vars
                         )
             else:
                 slice_loc = get_slice_location(grid_info, slice_config['plane'], slice_config['index'])
@@ -1239,7 +1309,7 @@ def main():
                         slices_data, coord1, coord2, axis_labels, slice_info,
                         cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
                         shared_scale=slice_config['shared_scale'], save_path=save_path,
-                        display=slice_config['display']
+                        display=slice_config['display'], point_data_vars=interpolated_vars
                     )
                 else:
                     for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
@@ -1258,7 +1328,8 @@ def main():
                             cmap=slice_config['cmap'], vmin=slice_config['vmin'],
                             vmax=slice_config['vmax'], symmetric=slice_config['symmetric'],
                             slice_info=slice_info, save_path=save_path,
-                            display=slice_config['display']
+                            display=slice_config['display'],
+                            smooth_point_data=variable in interpolated_vars
                         )
 
             print("\n" + "=" * 60)
