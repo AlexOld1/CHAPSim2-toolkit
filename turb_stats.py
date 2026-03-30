@@ -7,12 +7,20 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Tuple, Optional, Any, Union
 from dataclasses import dataclass
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
 import hashlib
 import math
 import os
 from tqdm import tqdm
+
+mpl.rcParams.update({
+"font.family": "serif",
+"font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+"mathtext.fontset": "cm",
+"axes.unicode_minus": False,
+})
 
 # import modules --------------------------------------------------------------------------------------------------------------------------------------
 import operations as op

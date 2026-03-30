@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import sys
 import os
+
+mpl.rcParams.update({
+"font.family": "serif",
+"font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+"mathtext.fontset": "cm",
+"axes.unicode_minus": False,
+})
 
 plt.rcParams['agg.path.chunksize'] = 10000 # Configure matplotlib for better performance with large datasets
 plt.rcParams['path.simplify_threshold'] = 1.0

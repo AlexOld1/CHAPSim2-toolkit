@@ -6,10 +6,18 @@ Requires only numpy, matplotlib, and tqdm.
 """
 
 import numpy as np
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 import os
 import glob
 from tqdm import tqdm
+
+mpl.rcParams.update({
+"font.family": "serif",
+"font.serif": ["Computer Modern Roman", "CMU Serif", "DejaVu Serif"],
+"mathtext.fontset": "cm",
+"axes.unicode_minus": False,
+})
 
 # Import the shared XDMF reader from utils
 import utils as ut
