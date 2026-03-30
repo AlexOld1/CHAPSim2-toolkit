@@ -824,6 +824,11 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
         vmax_input = input("vmax: ").strip()
         vmin = float(vmin_input) if vmin_input else None
         vmax = float(vmax_input) if vmax_input else None
+        center_input = input("Centre custom range at zero? (y/n) [n]: ").strip().lower()
+        center_zero = center_input == 'y'
+        if center_zero and not (vmin is not None and vmax is not None and vmin < 0 < vmax):
+            print("  Warning: Zero-centred scaling requires vmin < 0 < vmax. Using linear custom range.")
+            center_zero = False
     elif scale_choice == '4':
         center_zero = True
 
@@ -993,6 +998,11 @@ def get_slice_config(var_metadata, grid_info):
         vmax_input = input("vmax: ").strip()
         vmin = float(vmin_input) if vmin_input else None
         vmax = float(vmax_input) if vmax_input else None
+        center_input = input("Centre custom range at zero? (y/n) [n]: ").strip().lower()
+        center_zero = center_input == 'y'
+        if center_zero and not (vmin is not None and vmax is not None and vmin < 0 < vmax):
+            print("  Warning: Zero-centred scaling requires vmin < 0 < vmax. Using linear custom range.")
+            center_zero = False
     elif scale_choice == '4':
         center_zero = True
 
