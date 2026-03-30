@@ -1136,6 +1136,18 @@ class TurbulencePlotter:
         self.config = config
         self.plot_config = plot_config
         self.data_loader = data_loader
+        # Keep one consistent line style per case across all plots.
+        style_cycle = ['-', '--', '-.', ':', (0, (3, 1, 1, 1)), (0, (5, 1))]
+        self.case_linestyles = {
+            case: style_cycle[i % len(style_cycle)]
+            for i, case in enumerate(self.config.cases)
+        }
+        # Distinct case markers for readability in overlapping lines.
+        marker_cycle = ['o', 's', '^', 'D', 'x', 'P', 'v', '*']
+        self.case_markers = {
+            case: marker_cycle[i % len(marker_cycle)]
+            for i, case in enumerate(self.config.cases)
+        }
 
     # ------------------------------------------------------------------
     # Plane / profile extraction helpers
@@ -1303,7 +1315,9 @@ class TurbulencePlotter:
                 for suffix, profile in profiles:
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{case.replace("_", " = ")}{suffix}'
-                    self._plot_line(ax, y_plus, profile, label, color)
+                    linestyle = self._get_linestyle(case)
+                    marker = self._get_marker(case)
+                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
                 if reference_data:
                     self._plot_reference_data(ax, stat.name, case, reference_data)
@@ -1341,7 +1355,9 @@ class TurbulencePlotter:
                 for suffix, profile in profiles:
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{stat.label}{suffix}'
-                    self._plot_line(ax, y_plus, profile, label, color)
+                    linestyle = self._get_linestyle(case)
+                    marker = self._get_marker(case)
+                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
         ax.axhline(y=0, color='black', linewidth=0.5, linestyle='--')
         ax.set_title(f'TKE Budget ({component})')
@@ -1375,9 +1391,11 @@ class TurbulencePlotter:
                     # Get plotting aesthetics
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{stat.label}, {case.replace("_", " = ")}{suffix}'
+                    linestyle = self._get_linestyle(case)
+                    marker = self._get_marker(case)
 
                     # Plot main data
-                    self._plot_line(plt, y_plus, profile, label, color)
+                    self._plot_line(plt, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
                 # Plot reference data
                 if reference_data:
@@ -1436,9 +1454,11 @@ class TurbulencePlotter:
                     # Get plotting aesthetics
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{case.replace("_", " = ")}{suffix}'
+                    linestyle = self._get_linestyle(case)
+                    marker = self._get_marker(case)
 
                     # Plot main data
-                    self._plot_line(ax, y_plus, profile, label, color)
+                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
                 # Plot reference data
                 if reference_data:
@@ -1543,7 +1563,19 @@ class TurbulencePlotter:
                 for suffix, profile in profiles:
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = f'{case.replace("_", " = ")}{suffix}'
-                    ax.plot(x_coords, profile, label=label, color=color)
+                    linestyle = self._get_linestyle(case)
+                    marker = self._get_marker(case)
+                    markevery = max(1, len(x_coords) // 20)
+                    ax.plot(
+                        x_coords,
+                        profile,
+                        label=label,
+                        color=color,
+                        linestyle=linestyle,
+                        marker=marker,
+                        markersize=4,
+                        markevery=markevery
+                    )
             ax.set_title(stat.label)
             ax.set_xlabel('$x$')
             ax.set_ylabel(stat.name.replace('_', ' '))
@@ -1555,14 +1587,34 @@ class TurbulencePlotter:
 
         return fig
 
-    def _plot_line(self, ax, x: np.ndarray, y: np.ndarray, label: str, color: str) -> None:
+    def _plot_line(self, ax, x: np.ndarray, y: np.ndarray, label: str, color: str,
+                   linestyle='-', marker='') -> None:
         """Plot a single line with appropriate scale"""
+        markevery = max(1, len(x) // 20) if marker else None
+        plot_kwargs = {
+            'label': label,
+            'linestyle': linestyle,
+            'marker': marker,
+            'color': color
+        }
+        if marker:
+            plot_kwargs['markersize'] = 4
+            plot_kwargs['markevery'] = markevery
+
         if self.config.log_y_scale:
-            ax.semilogx(x, y, label=label, linestyle='-', marker='', color=color)
+            ax.semilogx(x, y, **plot_kwargs)
         elif self.config.linear_y_scale:
-            ax.plot(x, y, label=label, linestyle='-', marker='', color=color)
+            ax.plot(x, y, **plot_kwargs)
         else:
             print('Plotting input incorrectly defined')
+
+    def _get_linestyle(self, case: str):
+        """Return a consistent line style for each case."""
+        return self.case_linestyles.get(case, '-')
+
+    def _get_marker(self, case: str):
+        """Return a consistent marker for each case."""
+        return self.case_markers.get(case, 'o')
 
     def _plot_reference_data(self, ax, stat_name: str, case: str,
                             reference_data: ReferenceData) -> None:
