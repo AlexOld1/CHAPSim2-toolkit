@@ -304,7 +304,7 @@ def get_slice_location(grid_info, plane, index):
 def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
                cmap='viridis', vmin=None, vmax=None, symmetric=False,
                slice_info="", save_path=None, display=True,
-               smooth_point_data=False):
+               smooth_point_data=False, center_zero=False):
     """
     Plot a 2D slice with colorbar.
 
@@ -323,17 +323,35 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
     fig, ax = plt.subplots(figsize=(10, 6), constrained_layout=True)
 
     # Handle color scale
+    data_min = np.nanmin(slice_data)
+    data_max = np.nanmax(slice_data)
+    plot_cmap = cmap
+    norm = None
+
     if symmetric:
-        max_abs = max(abs(np.nanmin(slice_data)), abs(np.nanmax(slice_data)))
+        max_abs = max(abs(data_min), abs(data_max))
         vmin = -max_abs
         vmax = max_abs
         if cmap == 'viridis':
-            cmap = 'RdBu_r'
+            plot_cmap = 'RdBu_r'
 
     if vmin is None:
-        vmin = np.nanmin(slice_data)
+        vmin = data_min
     if vmax is None:
-        vmax = np.nanmax(slice_data)
+        vmax = data_max
+
+    # Keep colorbar centered at zero while preserving asymmetric data limits.
+    if center_zero and not symmetric and (vmin < 0 < vmax):
+        norm = mpl.colors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+        if cmap == 'viridis':
+            plot_cmap = 'RdBu_r'
+
+    color_kwargs = {'cmap': plot_cmap}
+    if norm is not None:
+        color_kwargs['norm'] = norm
+    else:
+        color_kwargs['vmin'] = vmin
+        color_kwargs['vmax'] = vmax
 
     use_gouraud = (
         smooth_point_data
@@ -347,10 +365,8 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
             x_points,
             y_points,
             slice_data,
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            shading='gouraud'
+            shading='gouraud',
+            **color_kwargs
         )
     else:
         if len(coord1) == slice_data.shape[1]:
@@ -377,10 +393,8 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
             x_edges,
             y_edges,
             slice_data,
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            shading='flat'
+            shading='flat',
+            **color_kwargs
         )
 
     cbar = fig.colorbar(pcm, ax=ax, label=variable_name)
@@ -410,7 +424,8 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
 
 def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
                          cmap='viridis', symmetric=False, shared_scale=False,
-                         save_path=None, display=True, point_data_vars=None):
+                         save_path=None, display=True, point_data_vars=None,
+                         center_zero=False):
     """
     Plot multiple 2D slices in a single figure with subplots.
 
@@ -444,6 +459,7 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
 
     # Compute shared scale if requested
     plot_cmap = cmap
+    global_norm = None
     if shared_scale:
         all_data = np.concatenate([s[1].flatten() for s in slices_data])
         if symmetric:
@@ -454,22 +470,40 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
         else:
             global_vmin = np.nanmin(all_data)
             global_vmax = np.nanmax(all_data)
+            if center_zero and (global_vmin < 0 < global_vmax):
+                global_norm = mpl.colors.TwoSlopeNorm(vmin=global_vmin, vcenter=0.0, vmax=global_vmax)
+                if cmap == 'viridis':
+                    plot_cmap = 'RdBu_r'
 
     for i, (var_name, slice_data) in enumerate(slices_data):
         row, col = i // ncols, i % ncols
         ax = axs[row, col]
+        local_cmap = plot_cmap
+        norm = None
 
         # Handle color scale
         if shared_scale:
             vmin, vmax = global_vmin, global_vmax
+            norm = global_norm
         elif symmetric:
             max_abs = max(abs(np.nanmin(slice_data)), abs(np.nanmax(slice_data)))
             vmin, vmax = -max_abs, max_abs
             if cmap == 'viridis':
-                plot_cmap = 'RdBu_r'
+                local_cmap = 'RdBu_r'
         else:
             vmin = np.nanmin(slice_data)
             vmax = np.nanmax(slice_data)
+            if center_zero and (vmin < 0 < vmax):
+                norm = mpl.colors.TwoSlopeNorm(vmin=vmin, vcenter=0.0, vmax=vmax)
+                if cmap == 'viridis':
+                    local_cmap = 'RdBu_r'
+
+        color_kwargs = {'cmap': local_cmap}
+        if norm is not None:
+            color_kwargs['norm'] = norm
+        else:
+            color_kwargs['vmin'] = vmin
+            color_kwargs['vmax'] = vmax
 
         use_gouraud = (
             point_data_vars is not None
@@ -484,10 +518,8 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
                 x_points,
                 y_points,
                 slice_data,
-                cmap=plot_cmap,
-                vmin=vmin,
-                vmax=vmax,
-                shading='gouraud'
+                shading='gouraud',
+                **color_kwargs
             )
         else:
             if len(coord1) == slice_data.shape[1]:
@@ -514,10 +546,8 @@ def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
                 x_edges,
                 y_edges,
                 slice_data,
-                cmap=plot_cmap,
-                vmin=vmin,
-                vmax=vmax,
-                shading='flat'
+                shading='flat',
+                **color_kwargs
             )
 
         fig.colorbar(pcm, ax=ax, label=var_name)
@@ -780,9 +810,11 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
     print("  1. Auto (min to max)")
     print("  2. Symmetric around zero")
     print("  3. Custom range")
+    print("  4. Centre at zero (crop to data min/max)")
     scale_choice = input("Scale option [1]: ").strip()
 
     symmetric = False
+    center_zero = False
     vmin, vmax = None, None
 
     if scale_choice == '2':
@@ -792,6 +824,8 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
         vmax_input = input("vmax: ").strip()
         vmin = float(vmin_input) if vmin_input else None
         vmax = float(vmax_input) if vmax_input else None
+    elif scale_choice == '4':
+        center_zero = True
 
     # Combined plot option
     combined_plot = False
@@ -823,6 +857,7 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
         'index': None,  # Not applicable for pre-sliced data
         'cmap': cmap,
         'symmetric': symmetric,
+        'center_zero': center_zero,
         'vmin': vmin,
         'vmax': vmax,
         'save_dir': save_dir,
@@ -944,9 +979,11 @@ def get_slice_config(var_metadata, grid_info):
     print("  1. Auto (min to max)")
     print("  2. Symmetric around zero")
     print("  3. Custom range")
+    print("  4. Centre at zero (crop to data min/max)")
     scale_choice = input("Scale option [1]: ").strip()
 
     symmetric = False
+    center_zero = False
     vmin, vmax = None, None
 
     if scale_choice == '2':
@@ -956,6 +993,8 @@ def get_slice_config(var_metadata, grid_info):
         vmax_input = input("vmax: ").strip()
         vmin = float(vmin_input) if vmin_input else None
         vmax = float(vmax_input) if vmax_input else None
+    elif scale_choice == '4':
+        center_zero = True
 
     # Combined plot option (only ask if multiple variables selected)
     combined_plot = False
@@ -991,6 +1030,7 @@ def get_slice_config(var_metadata, grid_info):
         'index': index,
         'cmap': cmap,
         'symmetric': symmetric,
+        'center_zero': center_zero,
         'vmin': vmin,
         'vmax': vmax,
         'save_dir': save_dir,
@@ -1101,7 +1141,8 @@ def main():
                 cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
                 shared_scale=slice_config['shared_scale'],
                 save_path=save_path, display=slice_config['display'],
-                point_data_vars=interpolated_vars
+                point_data_vars=interpolated_vars,
+                center_zero=slice_config.get('center_zero', False)
             )
         else:
             for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
@@ -1122,7 +1163,8 @@ def main():
                     symmetric=slice_config['symmetric'],
                     slice_info=slice_info, save_path=save_path,
                     display=slice_config['display'],
-                    smooth_point_data=variable in interpolated_vars
+                    smooth_point_data=variable in interpolated_vars,
+                    center_zero=slice_config.get('center_zero', False)
                 )
     else:
         # 3D data — extract slice as before
@@ -1172,7 +1214,8 @@ def main():
                 shared_scale=slice_config['shared_scale'],
                 save_path=save_path,
                 display=slice_config['display'],
-                point_data_vars=interpolated_vars
+                point_data_vars=interpolated_vars,
+                center_zero=slice_config.get('center_zero', False)
             )
         else:
             # Process each variable separately
@@ -1206,7 +1249,8 @@ def main():
                     slice_info=slice_info,
                     save_path=save_path,
                     display=slice_config['display'],
-                    smooth_point_data=variable in interpolated_vars
+                    smooth_point_data=variable in interpolated_vars,
+                    center_zero=slice_config.get('center_zero', False)
                 )
 
     print("\n" + "=" * 60)
@@ -1268,7 +1312,8 @@ def main():
                         cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
                         shared_scale=slice_config['shared_scale'], save_path=save_path,
                         display=slice_config['display'],
-                        point_data_vars=interpolated_vars
+                        point_data_vars=interpolated_vars,
+                        center_zero=slice_config.get('center_zero', False)
                     )
                 else:
                     for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
@@ -1285,7 +1330,8 @@ def main():
                             vmax=slice_config['vmax'], symmetric=slice_config['symmetric'],
                             slice_info=slice_info, save_path=save_path,
                             display=slice_config['display'],
-                            smooth_point_data=variable in interpolated_vars
+                            smooth_point_data=variable in interpolated_vars,
+                            center_zero=slice_config.get('center_zero', False)
                         )
             else:
                 slice_loc = get_slice_location(grid_info, slice_config['plane'], slice_config['index'])
@@ -1317,7 +1363,8 @@ def main():
                         slices_data, coord1, coord2, axis_labels, slice_info,
                         cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
                         shared_scale=slice_config['shared_scale'], save_path=save_path,
-                        display=slice_config['display'], point_data_vars=interpolated_vars
+                        display=slice_config['display'], point_data_vars=interpolated_vars,
+                        center_zero=slice_config.get('center_zero', False)
                     )
                 else:
                     for variable in tqdm(slice_config['variables'], desc="Plotting", unit="var"):
@@ -1337,7 +1384,8 @@ def main():
                             vmax=slice_config['vmax'], symmetric=slice_config['symmetric'],
                             slice_info=slice_info, save_path=save_path,
                             display=slice_config['display'],
-                            smooth_point_data=variable in interpolated_vars
+                            smooth_point_data=variable in interpolated_vars,
+                            center_zero=slice_config.get('center_zero', False)
                         )
 
             print("\n" + "=" * 60)
