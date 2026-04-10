@@ -10,7 +10,6 @@ import numpy as np
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import matplotlib.colors as mcolors
-import hashlib
 import math
 import os
 from tqdm import tqdm
@@ -44,6 +43,8 @@ class Config:
     ref_temp: List[float]
 
     ux_velocity_on: bool
+    uy_velocity_on: bool
+    uz_velocity_on: bool
     temp_on: bool
     tke_on: bool
     profile_direction: str
@@ -60,13 +61,6 @@ class Config:
     re_stress_component: str
     average_z_direction: bool
     average_x_direction: bool
-    production_on: bool
-    dissipation_on: bool
-    convection_on: bool
-    viscous_diffusion_on: bool
-    pressure_transport_on: bool
-    turbulent_diffusion_on: bool
-    pressure_strain_on: bool
 
     norm_by_u_tau_sq: bool
     norm_ux_by_u_tau: bool
@@ -102,6 +96,8 @@ class Config:
             Re=getattr(config_module, 'Re', [1.0]),
             ref_temp=getattr(config_module, 'ref_temp', [300.0]),
             ux_velocity_on=getattr(config_module, 'ux_velocity_on', False),
+            uy_velocity_on=getattr(config_module, 'uy_velocity_on', False),
+            uz_velocity_on=getattr(config_module, 'uz_velocity_on', False),
             temp_on=getattr(config_module, 'temp_on', False),
             tke_on=getattr(config_module, 'tke_on', False),
             u_prime_sq_on=getattr(config_module, 'u_prime_sq_on', False),
@@ -117,13 +113,6 @@ class Config:
             re_stress_component=getattr(config_module, 're_stress_component', 'total'),
             average_z_direction=getattr(config_module, 'average_z_direction', True),
             average_x_direction=getattr(config_module, 'average_x_direction', False),
-            production_on=getattr(config_module, 'production_on', False),
-            dissipation_on=getattr(config_module, 'dissipation_on', False),
-            convection_on=getattr(config_module, 'convection_on', False),
-            viscous_diffusion_on=getattr(config_module, 'viscous_diffusion_on', False),
-            pressure_transport_on=getattr(config_module, 'pressure_transport_on', False),
-            turbulent_diffusion_on=getattr(config_module, 'turbulent_diffusion_on', False),
-            pressure_strain_on=getattr(config_module, 'pressure_strain_on', False),
             norm_by_u_tau_sq=getattr(config_module, 'norm_by_u_tau_sq', False),
             norm_ux_by_u_tau=getattr(config_module, 'norm_ux_by_u_tau', False),
             norm_y_to_y_plus=getattr(config_module, 'norm_y_to_y_plus', False),
@@ -159,6 +148,8 @@ class PlotConfig:
         if self.colors_1 is None:
             self.colors_1 = {
                 'ux_velocity': '#1f77b4',
+                'uy_velocity': '#17becf',
+                'uz_velocity': '#ff7f0e',
                 'u_prime_sq': '#d62728',
                 'u_prime_v_prime': '#2ca02c',
                 'w_prime_sq': '#9467bd',
@@ -168,6 +159,8 @@ class PlotConfig:
         if self.colors_2 is None:
             self.colors_2 = {
                 'ux_velocity': '#e41a1c',
+                'uy_velocity': '#377eb8',
+                'uz_velocity': '#4daf4a',
                 'u_prime_sq': '#ff7f00',
                 'u_prime_v_prime': '#4daf4a',
                 'w_prime_sq': '#377eb8',
@@ -177,6 +170,8 @@ class PlotConfig:
         if self.colors_3 is None:
             self.colors_3 = {
                 'ux_velocity': '#332288',
+                'uy_velocity': '#44aa99',
+                'uz_velocity': '#ddcc77',
                 'u_prime_sq': '#882255',
                 'u_prime_v_prime': '#117733',
                 'w_prime_sq': '#004488',
@@ -186,6 +181,8 @@ class PlotConfig:
         if self.colors_4 is None:
             self.colors_4 = {
                 'ux_velocity': '#c51b7d',
+                'uy_velocity': '#1b9e77',
+                'uz_velocity': '#a6611a',
                 'u_prime_sq': '#a6611a',
                 'u_prime_v_prime': '#1b9e77',
                 'w_prime_sq': '#0c7c59',
@@ -195,6 +192,8 @@ class PlotConfig:
         if self.colors_blck is None:
             self.colors_blck = {
                 'ux_velocity': 'black',
+                'uy_velocity': 'black',
+                'uz_velocity': 'black',
                 'u_prime_sq': 'black',
                 'u_prime_v_prime': 'black',
                 'w_prime_sq': 'black',
@@ -222,6 +221,8 @@ class PlotConfig:
         if self.stat_labels is None:
             self.stat_labels = {
                 "ux_velocity": "Streamwise Velocity",
+                "uy_velocity": "Wall-Normal Velocity",
+                "uz_velocity": "Spanwise Velocity",
                 "u_prime_sq": "<u'u'>",
                 "u_prime_v_prime": "<u'v'>",
                 "v_prime_sq": "<v'v'>",
@@ -280,10 +281,7 @@ def create_data_loader(config: Config, data_types: List[str] = None):
             re_stress_enabled = (config.u_prime_sq_on or config.u_prime_v_prime_on or
                                  config.v_prime_sq_on or config.w_prime_sq_on or config.tke_on)
 
-            re_stress_budget_enabled = (config.re_stress_budget_on or config.production_on or
-                                  config.dissipation_on or config.convection_on or
-                                  config.viscous_diffusion_on or config.pressure_transport_on or
-                                  config.turbulent_diffusion_on)
+            re_stress_budget_enabled = config.re_stress_budget_on
 
             # t_avg contains Reynolds stresses (uu11 etc.), gradient terms,
             # and mean velocities — used for both Re-stresses and TKE budgets
@@ -733,6 +731,26 @@ class StreamwiseVelocity(Profiles):
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         return op.read_profile(data_dict['u1'])
 
+
+class WallNormalVelocity(Profiles):
+    """Wall-normal velocity profile (u2)"""
+
+    def __init__(self):
+        super().__init__('uy_velocity', 'Wall-Normal Velocity', ['u2'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.read_profile(data_dict['u2'])
+
+
+class SpanwiseVelocity(Profiles):
+    """Spanwise velocity profile (u3)"""
+
+    def __init__(self):
+        super().__init__('uz_velocity', 'Spanwise Velocity', ['u3'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.read_profile(data_dict['u3'])
+
 class Temperature(Profiles):
     """Temperature profile"""
 
@@ -843,9 +861,11 @@ class TkeBudgetComputer:
 
         # Determine which terms are enabled
         self.enabled_terms = []
-        for flag, (term_name, label) in self.TERM_REGISTRY.items():
-            if config.re_stress_budget_on or getattr(config, flag, False):
-                self.enabled_terms.append((flag, term_name, label))
+        if config.re_stress_budget_on:
+            self.enabled_terms = [
+                (flag, term_name, label)
+                for flag, (term_name, label) in self.TERM_REGISTRY.items()
+            ]
 
         # Storage: {term_name: {(case, timestep): array}}
         self.raw_results: Dict[str, Dict[Tuple[str, str], np.ndarray]] = {
@@ -984,6 +1004,12 @@ class TurbulenceStatsPipeline:
         if self.config.ux_velocity_on:
             self.statistics.append(StreamwiseVelocity())
 
+        if self.config.uy_velocity_on:
+            self.statistics.append(WallNormalVelocity())
+
+        if self.config.uz_velocity_on:
+            self.statistics.append(SpanwiseVelocity())
+
         if self.config.u_prime_sq_on:
             self.statistics.append(ReynoldsStressuu11())
 
@@ -1003,10 +1029,7 @@ class TurbulenceStatsPipeline:
             self.statistics.append(Temperature(self.config.norm_temp_by_ref_temp, self.config.ref_temp, self.config.cases))
 
         # TKE Budget terms — single computer, thin wrappers per term
-        re_stress_budget_enabled = (self.config.re_stress_budget_on or self.config.production_on or
-                              self.config.dissipation_on or self.config.convection_on or
-                              self.config.viscous_diffusion_on or self.config.pressure_transport_on or
-                              self.config.turbulent_diffusion_on)
+        re_stress_budget_enabled = self.config.re_stress_budget_on
 
         self.budget_computer = None
         if re_stress_budget_enabled:
@@ -1148,6 +1171,72 @@ class TurbulencePlotter:
             case: marker_cycle[i % len(marker_cycle)]
             for i, case in enumerate(self.config.cases)
         }
+        self._series_color_map: Dict[str, str] = {}
+        self._next_color_index = 0
+
+    def _reset_color_cycle(self) -> None:
+        """Reset per-figure colour assignment so lines are distinct within each plot."""
+        self._series_color_map = {}
+        self._next_color_index = 0
+
+    def _format_case_label(self, case: str) -> str:
+        """Return a human-readable case label."""
+        return case.replace("_", " = ")
+
+    def _build_series_context_label(self, case: str, timestep: str, suffix: str) -> str:
+        """Build legend context from case/slice info, omitting case for single-case runs."""
+        include_case = len(self.config.cases) > 1
+        suffix_clean = suffix.strip()
+
+        if include_case and suffix_clean:
+            return f'{self._format_case_label(case)} {suffix_clean}'
+        if include_case:
+            return self._format_case_label(case)
+        if suffix_clean:
+            return suffix_clean
+        if len(self.config.timesteps) > 1:
+            return f't={timestep}'
+        return ''
+
+    def _build_legend_label(self, stat_label: str, case: str, timestep: str,
+                            suffix: str, include_stat_label: bool = False) -> str:
+        """Build legend labels with optional statistic prefix."""
+        context = self._build_series_context_label(case, timestep, suffix)
+        if include_stat_label:
+            return f'{stat_label}, {context}' if context else stat_label
+        return context if context else stat_label
+
+    def _get_y_profile_xlabel(self) -> str:
+        """Return x-axis label for wall-normal profiles."""
+        return '$y^+$' if self.config.norm_y_to_y_plus else '$y$'
+
+    def _get_stat_ylabel(self, stat_name: str, stat_label: str) -> str:
+        """Return y-axis label matching enabled normalisation options."""
+        base_labels = {
+            'ux_velocity': '$U_x$',
+            'uy_velocity': '$U_y$',
+            'uz_velocity': '$U_z$',
+            'temperature': '$T$',
+            'TKE': '$k$',
+            'u_prime_sq': "$\\langle u'u' \\rangle$",
+            'u_prime_v_prime': "$\\langle u'v' \\rangle$",
+            'v_prime_sq': "$\\langle v'v' \\rangle$",
+            'w_prime_sq': "$\\langle w'w' \\rangle$",
+        }
+        base = base_labels.get(stat_name, stat_label)
+
+        if stat_name == 'temperature':
+            return '$T/T_{ref}$' if self.config.norm_temp_by_ref_temp else base
+
+        if stat_name == 'ux_velocity' and self.config.norm_ux_by_u_tau:
+            return '$U_x/u_\\tau$'
+
+        if self.config.norm_by_u_tau_sq:
+            if isinstance(base, str) and base.startswith('$') and base.endswith('$'):
+                return base[:-1] + '/u_\\tau^2$'
+            return f'{base} / $u_\\tau^2$'
+
+        return base
 
     # ------------------------------------------------------------------
     # Plane / profile extraction helpers
@@ -1278,6 +1367,8 @@ class TurbulencePlotter:
         2-D data is reduced to 1-D profiles via ``_extract_profiles`` before
         plotting (either x-averaged or at specific slice coordinates).
         """
+        self._reset_color_cycle()
+
         # ---- TKE Budget: all terms on a single axes ----
         is_budget = all(isinstance(s, TkeBudgetTerm) for s in statistics)
         if is_budget:
@@ -1314,7 +1405,7 @@ class TurbulencePlotter:
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
-                    label = f'{case.replace("_", " = ")}{suffix}'
+                    label = self._build_legend_label(stat.label, case, timestep, suffix)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
                     self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
@@ -1325,13 +1416,13 @@ class TurbulencePlotter:
                     self._plot_log_reference_lines(ax, y_plus)
 
             ax.set_title(f'{stat.label}')
-            ax.set_ylabel(f"Normalised {stat.name.replace('_', ' ')}")
+            ax.set_ylabel(self._get_stat_ylabel(stat.name, stat.label))
             ax.grid(True)
             handles, labels = ax.get_legend_handles_labels()
             if handles:
                 ax.legend(fontsize='small')
             if row == nrows - 1:
-                ax.set_xlabel('$y^+$')
+                ax.set_xlabel(self._get_y_profile_xlabel())
 
         for i in range(n_stats, nrows * ncols):
             row = i // ncols
@@ -1354,18 +1445,18 @@ class TurbulencePlotter:
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
-                    label = f'{stat.label}{suffix}'
+                    label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
                     self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
         ax.axhline(y=0, color='black', linewidth=0.5, linestyle='--')
         ax.set_title(f'TKE Budget ({component})')
-        if self.config.norm_y_to_y_plus:
-            ax.set_xlabel('$y^+$')
+        ax.set_xlabel(self._get_y_profile_xlabel())
+        if self.config.norm_by_u_tau_sq:
+            ax.set_ylabel('Budget term magnitude / $u_\\tau^2$')
         else:
-            ax.set_xlabel('$y$')
-        ax.set_ylabel('Budget term magnitude')
+            ax.set_ylabel('Budget term magnitude')
         ax.grid(True)
         handles, labels = ax.get_legend_handles_labels()
         if handles:
@@ -1375,6 +1466,7 @@ class TurbulencePlotter:
     def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, TkeBudget]],
                            reference_data: Optional[ReferenceData] = None):
         """Create a single combined plot for all statistics"""
+        self._reset_color_cycle()
         plt.figure(figsize=(10, 6))
         plt.gcf().canvas.manager.set_window_title('Turbulence Statistics')
 
@@ -1390,7 +1482,7 @@ class TurbulencePlotter:
                 for suffix, profile in profiles:
                     # Get plotting aesthetics
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
-                    label = f'{stat.label}, {case.replace("_", " = ")}{suffix}'
+                    label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
 
@@ -1405,12 +1497,15 @@ class TurbulencePlotter:
                 if stat.name == 'ux_velocity' and self.config.ux_velocity_log_ref_on and self.config.log_y_scale:
                     self._plot_log_reference_lines(plt, y_plus)
 
-        plt.xlabel('$y^+$')
+        plt.xlabel(self._get_y_profile_xlabel())
  
         if len(statistics) == 1:
-            plt.ylabel(f"Normalised {statistics[0].name.replace('_', ' ')}")
+            plt.ylabel(self._get_stat_ylabel(statistics[0].name, statistics[0].label))
         else:
-            plt.ylabel("Normalised Reynolds Stresses")
+            if self.config.norm_by_u_tau_sq:
+                plt.ylabel('Statistic value / $u_\\tau^2$')
+            else:
+                plt.ylabel('Statistic value')
 
         plt.legend()
         plt.grid(True)
@@ -1420,6 +1515,7 @@ class TurbulencePlotter:
     def _plot_multi_figure(self, statistics: List[Union[ReStresses, Profiles, TkeBudget]],
                           reference_data: Optional[ReferenceData] = None):
         """Create separate subplots for each statistic"""
+        self._reset_color_cycle()
         n_stats = len(statistics)
         ncols = math.ceil(math.sqrt(n_stats))
         nrows = math.ceil(n_stats / ncols)
@@ -1453,7 +1549,7 @@ class TurbulencePlotter:
                 for suffix, profile in profiles:
                     # Get plotting aesthetics
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
-                    label = f'{case.replace("_", " = ")}{suffix}'
+                    label = self._build_legend_label(stat.label, case, timestep, suffix)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
 
@@ -1470,12 +1566,14 @@ class TurbulencePlotter:
 
             # Set subplot properties
             ax.set_title(f'{stat.label}')
-            ax.set_ylabel(f"Normalised {stat.name.replace('_', ' ')}")
+            ax.set_ylabel(self._get_stat_ylabel(stat.name, stat.label))
             ax.grid(True)
-            ax.legend(fontsize='small')
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(fontsize='small')
 
             if row == nrows - 1:
-                ax.set_xlabel('$y^+$')
+                ax.set_xlabel(self._get_y_profile_xlabel())
 
         # Hide unused subplots
         for i in range(n_stats, nrows * ncols):
@@ -1530,6 +1628,7 @@ class TurbulencePlotter:
     # ------------------------------------------------------------------
     def _plot_x_profile_figure(self, statistics, title: str):
         """Create a figure with streamwise (x-direction) profiles for each statistic."""
+        self._reset_color_cycle()
         x_coords = getattr(self.data_loader, 'x_coords', None)
         if x_coords is None:
             print('No x_coords available for x-direction profiles.')
@@ -1562,10 +1661,10 @@ class TurbulencePlotter:
                 profiles = self._extract_x_profiles(values)
                 for suffix, profile in profiles:
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
-                    label = f'{case.replace("_", " = ")}{suffix}'
+                    label = self._build_legend_label(stat.label, case, timestep, suffix)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
-                    markevery = max(1, len(x_coords) // 20)
+                    markevery = self._get_markevery(len(x_coords))
                     ax.plot(
                         x_coords,
                         profile,
@@ -1578,9 +1677,11 @@ class TurbulencePlotter:
                     )
             ax.set_title(stat.label)
             ax.set_xlabel('$x$')
-            ax.set_ylabel(stat.name.replace('_', ' '))
+            ax.set_ylabel(self._get_stat_ylabel(stat.name, stat.label))
             ax.grid(True)
-            ax.legend(fontsize='small')
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(fontsize='small')
 
         for i in range(n_stats, nrows * ncols):
             axs[i // ncols, i % ncols].set_visible(False)
@@ -1590,7 +1691,7 @@ class TurbulencePlotter:
     def _plot_line(self, ax, x: np.ndarray, y: np.ndarray, label: str, color: str,
                    linestyle='-', marker='') -> None:
         """Plot a single line with appropriate scale"""
-        markevery = max(1, len(x) // 20) if marker else None
+        markevery = self._get_markevery(len(x)) if marker else None
         plot_kwargs = {
             'label': label,
             'linestyle': linestyle,
@@ -1607,6 +1708,14 @@ class TurbulencePlotter:
             ax.plot(x, y, **plot_kwargs)
         else:
             print('Plotting input incorrectly defined')
+
+    def _get_markevery(self, n_points: int):
+        """Return marker spacing that appears visually uniform on the plotted curve."""
+        if n_points <= 12:
+            return 1
+        # Float spacing uses display-space distance, which keeps marker spacing
+        # visually even for both linear and semilog plots.
+        return (0.0, 1.0 / 11.0)
 
     def _get_linestyle(self, case: str):
         """Return a consistent line style for each case."""
@@ -1695,16 +1804,20 @@ class TurbulencePlotter:
             return y
 
     def _get_color(self, key: str, stat_name: Optional[str] = None) -> str:
-        """Get a visible default colour for a plotted series.
+        """Get a visible colour for a plotted series.
 
-        Colours are chosen from a shuffled high-contrast palette using a
-        stable hash of the series key, so different slice/profile lines get
-        different colours while remaining consistent between runs.
+        Colours are assigned sequentially from the visible palette per figure
+        so lines are distinct within a plot before any colour reuse.
         """
+        if key in self._series_color_map:
+            return self._series_color_map[key]
+
         palette = self.plot_config.visible_palette
-        digest = hashlib.md5(key.encode('utf-8')).hexdigest()
-        index = int(digest[:8], 16) % len(palette)
-        return palette[index]
+        index = self._next_color_index % len(palette)
+        color = palette[index]
+        self._series_color_map[key] = color
+        self._next_color_index += 1
+        return color
 
     def save_figure(self, fig, suffix: str = '') -> None:
         """Save figure to file"""
@@ -1725,15 +1838,21 @@ class TurbulencePlotter:
                         transparent=True,
                         orientation='landscape')
             print(f'Figure saved to {save_path}')
-        fig.savefig(f'turb_stats_plots/{filename}',
-                   dpi=300,
-                   bbox_inches='tight',
-                   pad_inches=0.1,
-                   facecolor='white',
-                   edgecolor='none',
-                   transparent=True,
-                   orientation='landscape')
-        print(f'Figure saved to turb_stats_plots/{filename}')
+
+        output_dir = os.path.join(os.getcwd(), 'turb_stats_plots')
+        if os.path.isdir(output_dir):
+            output_path = os.path.join(output_dir, filename)
+            fig.savefig(output_path,
+                       dpi=300,
+                       bbox_inches='tight',
+                       pad_inches=0.1,
+                       facecolor='white',
+                       edgecolor='none',
+                       transparent=True,
+                       orientation='landscape')
+            print(f'Figure saved to {output_path}')
+        else:
+            print('Skipping turb_stats_plots save because the directory does not exist in the current working directory.')
 
     def save_figures_by_class(self, figures: Dict[str, Any]) -> None:
         """Save multiple figures, one for each class type"""

@@ -18,6 +18,8 @@ ref_temp = [670] # Kelvin
 
 # Profiles
 ux_velocity_on = True
+uy_velocity_on = False
+uz_velocity_on = False
 temp_on = True
 tke_on = True
 profile_direction = 'y' # 'y' (wall-normal), 'x' (streamwise), or 'both'
@@ -37,12 +39,6 @@ re_stress_budget_on = True
 re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components
 average_z_direction = True # Averaging valid for periodic directions
 average_x_direction = False
-production_on = True
-dissipation_on = True
-convection_on = True
-viscous_diffusion_on = True
-pressure_transport_on = True
-turbulent_diffusion_on = True
 
 # Processing options ----------------------------------------------------------------------------------------------------------------------------------
 
