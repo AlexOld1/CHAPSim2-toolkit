@@ -76,6 +76,7 @@ class Config:
     display_fig: bool
     save_fig: bool
     save_to_path: bool
+    large_text_on: bool
     plot_name: str
 
     ux_velocity_log_ref_on: bool
@@ -125,6 +126,7 @@ class Config:
             display_fig=getattr(config_module, 'display_fig', False),
             save_fig=getattr(config_module, 'save_fig', True),
             save_to_path=getattr(config_module, 'save_to_path', False),
+            large_text_on=getattr(config_module, 'large_text_on', False),
             plot_name=getattr(config_module, 'plot_name', ''),
             ux_velocity_log_ref_on=getattr(config_module, 'ux_velocity_log_ref_on', False),
             mhd_NK_ref_on=getattr(config_module, 'mhd_NK_ref_on', False),
@@ -1213,20 +1215,20 @@ class TurbulencePlotter:
     def _get_stat_ylabel(self, stat_name: str, stat_label: str) -> str:
         """Return y-axis label matching enabled normalisation options."""
         base_labels = {
-            'ux_velocity': '$U_x$',
-            'uy_velocity': '$U_y$',
-            'uz_velocity': '$U_z$',
+            'ux_velocity': '$U_x/U_{bulk}$',
+            'uy_velocity': '$U_y/U_{bulk}$',
+            'uz_velocity': '$U_z/U_{bulk}$',
             'temperature': '$T$',
-            'TKE': '$k$',
-            'u_prime_sq': "$\\langle u'u' \\rangle$",
-            'u_prime_v_prime': "$\\langle u'v' \\rangle$",
-            'v_prime_sq': "$\\langle v'v' \\rangle$",
-            'w_prime_sq': "$\\langle w'w' \\rangle$",
+            'TKE': '$k/U_{bulk}^2$',
+            'u_prime_sq': "$\\langle u'u' \\rangle/U_{bulk}^2$",
+            'u_prime_v_prime': "$\\langle u'v' \\rangle/U_{bulk}^2$",
+            'v_prime_sq': "$\\langle v'v' \\rangle/U_{bulk}^2$",
+            'w_prime_sq': "$\\langle w'w' \\rangle/U_{bulk}^2$",
         }
         base = base_labels.get(stat_name, stat_label)
 
         if stat_name == 'temperature':
-            return '$T/T_{ref}$' if self.config.norm_temp_by_ref_temp else base
+            return '$T/T_{ref}$' if self.config.norm_temp_by_ref_temp else '$T$ (K)'
 
         if stat_name == 'ux_velocity' and self.config.norm_ux_by_u_tau:
             return '$U_x/u_\\tau$'
@@ -1237,6 +1239,23 @@ class TurbulencePlotter:
             return f'{base} / $u_\\tau^2$'
 
         return base
+
+    def _get_axis_label_fontsize(self) -> Optional[int]:
+        """Return axis-label font size when large text mode is enabled."""
+        return 15 if self.config.large_text_on else None
+
+    def _get_title_fontsize(self) -> Optional[int]:
+        """Return title font size when large text mode is enabled."""
+        return 15 if self.config.large_text_on else None
+
+    def _get_legend_fontsize(self) -> str:
+        """Return legend font size for normal/large text modes."""
+        return 'large' if self.config.large_text_on else 'small'
+
+    def _apply_axis_text_style(self, ax) -> None:
+        """Apply larger tick label text when requested."""
+        if self.config.large_text_on:
+            ax.tick_params(axis='both', which='both', labelsize=13)
 
     # ------------------------------------------------------------------
     # Plane / profile extraction helpers
@@ -1415,14 +1434,18 @@ class TurbulencePlotter:
                 if stat.name == 'ux_velocity' and self.config.ux_velocity_log_ref_on and self.config.log_y_scale:
                     self._plot_log_reference_lines(ax, y_plus)
 
-            ax.set_title(f'{stat.label}')
-            ax.set_ylabel(self._get_stat_ylabel(stat.name, stat.label))
+            ax.set_title(f'{stat.label}', fontsize=self._get_title_fontsize())
+            ax.set_ylabel(
+                self._get_stat_ylabel(stat.name, stat.label),
+                fontsize=self._get_axis_label_fontsize()
+            )
             ax.grid(True)
             handles, labels = ax.get_legend_handles_labels()
             if handles:
-                ax.legend(fontsize='small')
+                ax.legend(fontsize=self._get_legend_fontsize())
             if row == nrows - 1:
-                ax.set_xlabel(self._get_y_profile_xlabel())
+                ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
+            self._apply_axis_text_style(ax)
 
         for i in range(n_stats, nrows * ncols):
             row = i // ncols
@@ -1451,16 +1474,17 @@ class TurbulencePlotter:
                     self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
 
         ax.axhline(y=0, color='black', linewidth=0.5, linestyle='--')
-        ax.set_title(f'TKE Budget ({component})')
-        ax.set_xlabel(self._get_y_profile_xlabel())
+        ax.set_title(f'TKE Budget ({component})', fontsize=self._get_title_fontsize())
+        ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
         if self.config.norm_by_u_tau_sq:
-            ax.set_ylabel('Budget term magnitude / $u_\\tau^2$')
+            ax.set_ylabel('Budget term magnitude / $u_\\tau^2$', fontsize=self._get_axis_label_fontsize())
         else:
-            ax.set_ylabel('Budget term magnitude')
+            ax.set_ylabel('Budget term magnitude', fontsize=self._get_axis_label_fontsize())
         ax.grid(True)
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(fontsize='small')
+            ax.legend(fontsize=self._get_legend_fontsize())
+        self._apply_axis_text_style(ax)
         return fig
 
     def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, TkeBudget]],
@@ -1497,17 +1521,23 @@ class TurbulencePlotter:
                 if stat.name == 'ux_velocity' and self.config.ux_velocity_log_ref_on and self.config.log_y_scale:
                     self._plot_log_reference_lines(plt, y_plus)
 
-        plt.xlabel(self._get_y_profile_xlabel())
+        plt.xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
  
         if len(statistics) == 1:
-            plt.ylabel(self._get_stat_ylabel(statistics[0].name, statistics[0].label))
+            plt.ylabel(
+                self._get_stat_ylabel(statistics[0].name, statistics[0].label),
+                fontsize=self._get_axis_label_fontsize()
+            )
         else:
             if self.config.norm_by_u_tau_sq:
-                plt.ylabel('Statistic value / $u_\\tau^2$')
+                plt.ylabel('Statistic value / $u_\\tau^2$', fontsize=self._get_axis_label_fontsize())
             else:
-                plt.ylabel('Statistic value')
+                plt.ylabel('Statistic value', fontsize=self._get_axis_label_fontsize())
 
-        plt.legend()
+        plt.legend(fontsize=self._get_legend_fontsize())
+        if self.config.large_text_on:
+            plt.xticks(fontsize=13)
+            plt.yticks(fontsize=13)
         plt.grid(True)
 
         return plt.gcf()
@@ -1565,15 +1595,19 @@ class TurbulencePlotter:
                     self._plot_log_reference_lines(ax, y_plus)
 
             # Set subplot properties
-            ax.set_title(f'{stat.label}')
-            ax.set_ylabel(self._get_stat_ylabel(stat.name, stat.label))
+            ax.set_title(f'{stat.label}', fontsize=self._get_title_fontsize())
+            ax.set_ylabel(
+                self._get_stat_ylabel(stat.name, stat.label),
+                fontsize=self._get_axis_label_fontsize()
+            )
             ax.grid(True)
             handles, labels = ax.get_legend_handles_labels()
             if handles:
-                ax.legend(fontsize='small')
+                ax.legend(fontsize=self._get_legend_fontsize())
 
             if row == nrows - 1:
-                ax.set_xlabel(self._get_y_profile_xlabel())
+                ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
+            self._apply_axis_text_style(ax)
 
         # Hide unused subplots
         for i in range(n_stats, nrows * ncols):
@@ -1612,10 +1646,14 @@ class TurbulencePlotter:
 
                 fig, ax = plt.subplots(figsize=(12, 5), constrained_layout=True)
                 cf = ax.contourf(X, Y, values, levels=64, cmap='RdBu_r')
-                fig.colorbar(cf, ax=ax, label=stat.label)
-                ax.set_xlabel('$x$')
-                ax.set_ylabel('$y$')
-                ax.set_title(f'{stat.label}  ({case}, t={timestep})')
+                cbar = fig.colorbar(cf, ax=ax)
+                cbar.set_label(stat.label, fontsize=self._get_axis_label_fontsize())
+                if self.config.large_text_on:
+                    cbar.ax.tick_params(labelsize=13)
+                ax.set_xlabel('$x$', fontsize=self._get_axis_label_fontsize())
+                ax.set_ylabel('$y$', fontsize=self._get_axis_label_fontsize())
+                ax.set_title(f'{stat.label}  ({case}, t={timestep})', fontsize=self._get_title_fontsize())
+                self._apply_axis_text_style(ax)
                 fig.canvas.manager.set_window_title(f'{title} - {stat.label} surface')
 
                 key = f'{stat.name}_surface_{case}_{timestep}'
@@ -1675,13 +1713,17 @@ class TurbulencePlotter:
                         markersize=4,
                         markevery=markevery
                     )
-            ax.set_title(stat.label)
-            ax.set_xlabel('$x$')
-            ax.set_ylabel(self._get_stat_ylabel(stat.name, stat.label))
+            ax.set_title(stat.label, fontsize=self._get_title_fontsize())
+            ax.set_xlabel('$x$', fontsize=self._get_axis_label_fontsize())
+            ax.set_ylabel(
+                self._get_stat_ylabel(stat.name, stat.label),
+                fontsize=self._get_axis_label_fontsize()
+            )
             ax.grid(True)
             handles, labels = ax.get_legend_handles_labels()
             if handles:
-                ax.legend(fontsize='small')
+                ax.legend(fontsize=self._get_legend_fontsize())
+            self._apply_axis_text_style(ax)
 
         for i in range(n_stats, nrows * ncols):
             axs[i // ncols, i % ncols].set_visible(False)

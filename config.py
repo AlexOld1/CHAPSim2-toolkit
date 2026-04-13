@@ -57,6 +57,7 @@ multi_plot = True
 display_fig = False
 save_fig = True
 save_to_path = True
+large_text_on = False # Increase axes, label, title and legend font sizes for readability
 plot_name = '' # name for saved plot files, leave blank for default naming
 
 # reference data options
