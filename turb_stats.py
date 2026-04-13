@@ -229,6 +229,7 @@ class PlotConfig:
                 "u_prime_v_prime": "<u'v'>",
                 "v_prime_sq": "<v'v'>",
                 "w_prime_sq": "<w'w'>",
+                "TKE": "Turbulent Kinetic Energy",
                 # TKE Budget terms
                 "production": "Production",
                 "dissipation": "Dissipation",
@@ -791,7 +792,7 @@ class TurbulentKineticEnergy(Profiles):
     """Turbulent Kinetic Energy (TKE)"""
 
     def __init__(self):
-        super().__init__('TKE', 'k', ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'])
+        super().__init__('TKE', 'Turbulent Kinetic Energy', ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'])
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         u_prime_sq = op.compute_normal_stress(data_dict['u1'], data_dict['uu11'])
@@ -1242,11 +1243,11 @@ class TurbulencePlotter:
 
     def _get_axis_label_fontsize(self) -> Optional[int]:
         """Return axis-label font size when large text mode is enabled."""
-        return 15 if self.config.large_text_on else None
+        return 18 if self.config.large_text_on else None
 
     def _get_title_fontsize(self) -> Optional[int]:
         """Return title font size when large text mode is enabled."""
-        return 15 if self.config.large_text_on else None
+        return 20 if self.config.large_text_on else None
 
     def _get_legend_fontsize(self) -> str:
         """Return legend font size for normal/large text modes."""
@@ -1255,7 +1256,7 @@ class TurbulencePlotter:
     def _apply_axis_text_style(self, ax) -> None:
         """Apply larger tick label text when requested."""
         if self.config.large_text_on:
-            ax.tick_params(axis='both', which='both', labelsize=13)
+            ax.tick_params(axis='both', which='both', labelsize=16)
 
     # ------------------------------------------------------------------
     # Plane / profile extraction helpers
@@ -1536,8 +1537,8 @@ class TurbulencePlotter:
 
         plt.legend(fontsize=self._get_legend_fontsize())
         if self.config.large_text_on:
-            plt.xticks(fontsize=13)
-            plt.yticks(fontsize=13)
+            plt.xticks(fontsize=16)
+            plt.yticks(fontsize=16)
         plt.grid(True)
 
         return plt.gcf()

@@ -2,8 +2,7 @@
 
 # Define input cases ==================================================================================================================================
 
-# format: folder_path/case/1_data/quantity_timestep.dat
-folder_path = ''
+folder_path = '' # format: folder_path/case/1_data/quantity_timestep.dat
 input_format = 'visu' # 'text' (.dat) or 'visu' (.xdmf)
 cases = ['Tests'] # case names must match folder names exactly
 timesteps = ['680000']
