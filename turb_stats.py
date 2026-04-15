@@ -1184,7 +1184,7 @@ class TurbulencePlotter:
 
     def _format_case_label(self, case: str) -> str:
         """Return a human-readable case label."""
-        return case.replace("_", " = ")
+        return case.replace("_", " ")
 
     def _build_series_context_label(self, case: str, timestep: str, suffix: str) -> str:
         """Build legend context from case/slice info, omitting case for single-case runs."""
@@ -1229,7 +1229,7 @@ class TurbulencePlotter:
         base = base_labels.get(stat_name, stat_label)
 
         if stat_name == 'temperature':
-            return '$T/T_{ref}$' if self.config.norm_temp_by_ref_temp else '$T$ (K)'
+            return '$\\theta/\\theta_{ref}$' if self.config.norm_temp_by_ref_temp else '$\\theta$ (K)'
 
         if stat_name == 'ux_velocity' and self.config.norm_ux_by_u_tau:
             return '$U_x/u_\\tau$'
