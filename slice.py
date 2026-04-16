@@ -283,6 +283,69 @@ def process_data_arrays(data, selected_vars, grid_info, interpolate_cell_to_poin
     return processed, interpolated_vars
 
 
+COLORMAP_OPTIONS = [
+    'viridis',
+    'plasma',
+    'inferno',
+    'magma',
+    'cividis',
+    'RdBu_r',
+    'coolwarm',
+    'jet',
+]
+
+
+def choose_colormap(default='RdBu_r'):
+    """Prompt for a colormap using a numbered menu."""
+    print("\nColormaps:")
+    for i, name in enumerate(COLORMAP_OPTIONS, start=1):
+        print(f"  {i}. {name}")
+
+    cmap_choice = input(f"Colormap [{default}]: ").strip()
+    if not cmap_choice:
+        return default
+
+    if cmap_choice.isdigit():
+        idx = int(cmap_choice) - 1
+        if 0 <= idx < len(COLORMAP_OPTIONS):
+            return COLORMAP_OPTIONS[idx]
+
+    if cmap_choice in COLORMAP_OPTIONS:
+        return cmap_choice
+
+    print(f"  Warning: invalid colormap selection, using {default}")
+    return default
+
+
+def build_save_filename(variable_name, slice_token, timestep, interpolated=False, combined=False):
+    """Build a timestep-aware output filename for a slice plot."""
+    base_name = 'combined' if combined else variable_name
+    if interpolated and not combined and base_name.endswith('_ccc'):
+        base_name = base_name[:-4]
+
+    parts = [base_name]
+    if slice_token:
+        parts.append(str(slice_token))
+    if timestep:
+        parts.append(str(timestep))
+    parts.append('slice')
+    return '_'.join(parts) + '.png'
+
+
+def build_save_path(save_dir, variable_name, slice_token, timestep, interpolated=False, combined=False):
+    """Build an absolute save path for a plot, or None if saving is disabled."""
+    if not save_dir:
+        return None
+    filename = build_save_filename(
+        variable_name,
+        slice_token,
+        timestep,
+        interpolated=interpolated,
+        combined=combined,
+    )
+    return os.path.join(save_dir, filename)
+
+
 def get_slice_location(grid_info, plane, index):
     """Get the physical location of the slice."""
     if plane == 'xy':
@@ -302,8 +365,8 @@ def get_slice_location(grid_info, plane, index):
 
 
 def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
-               cmap='viridis', vmin=None, vmax=None, symmetric=False,
-               slice_info="", save_path=None, display=True,
+               cmap='RdBu_r', vmin=None, vmax=None, symmetric=False,
+               slice_info="", save_path=None, display=False,
                smooth_point_data=False, center_zero=False):
     """
     Plot a 2D slice with colorbar.
@@ -423,8 +486,8 @@ def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
 
 
 def plot_combined_slices(slices_data, coord1, coord2, axis_labels, slice_info,
-                         cmap='viridis', symmetric=False, shared_scale=False,
-                         save_path=None, display=True, point_data_vars=None,
+                         cmap='RdBu_r', symmetric=False, shared_scale=False,
+                         save_path=None, display=False, point_data_vars=None,
                          center_zero=False):
     """
     Plot multiple 2D slices in a single figure with subplots.
@@ -800,10 +863,7 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
     interpolate_cell_to_point = interp_input == 'y'
 
     # Colormap selection
-    print("\nColormaps: viridis, plasma, inferno, magma, cividis, RdBu_r, coolwarm, jet")
-    cmap = input("Colormap [viridis]: ").strip()
-    if not cmap:
-        cmap = 'viridis'
+    cmap = choose_colormap('RdBu_r')
 
     # Color scale options
     print("\nColor scale options:")
@@ -843,8 +903,7 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
             shared_scale = shared_input == 'y'
 
     # Save options
-    save_input = input("\nSave figures? (y/n) [y]: ").strip().lower()
-    save_fig = save_input != 'n'
+    save_fig = True
 
     save_dir = None
     if save_fig:
@@ -853,8 +912,8 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
             save_dir = os.getcwd()
         save_dir = os.path.expanduser(os.path.expandvars(save_dir))
 
-    display_input = input("Display figures? (y/n) [y]: ").strip().lower()
-    display = display_input != 'n'
+    display_input = input("Display figures? (y/n) [n]: ").strip().lower()
+    display = display_input == 'y'
 
     return {
         'variables': selected_vars,
@@ -974,10 +1033,7 @@ def get_slice_config(var_metadata, grid_info):
                 print(f"  -> Cropping x from {x_min:.4f} to {x_max:.4f}")
 
     # Colormap selection
-    print("\nColormaps: viridis, plasma, inferno, magma, cividis, RdBu_r, coolwarm, jet")
-    cmap = input("Colormap [viridis]: ").strip()
-    if not cmap:
-        cmap = 'viridis'
+    cmap = choose_colormap('RdBu_r')
 
     # Color scale options
     print("\nColor scale options:")
@@ -1018,8 +1074,7 @@ def get_slice_config(var_metadata, grid_info):
             shared_scale = shared_input == 'y'
 
     # Save options
-    save_input = input("\nSave figures? (y/n) [y]: ").strip().lower()
-    save_fig = save_input != 'n'
+    save_fig = True
 
     save_dir = None
     if save_fig:
@@ -1028,11 +1083,11 @@ def get_slice_config(var_metadata, grid_info):
             save_dir = os.getcwd()
         save_dir = os.path.expanduser(os.path.expandvars(save_dir))
 
-    display_input = input("Display figures? (y/n) [y]: ").strip().lower()
-    display = display_input != 'n'
+    display_input = input("Display figures? (y/n) [n]: ").strip().lower()
+    display = display_input == 'y'
 
-    interp_input = input("\nInterpolate cell data to point data? (y/n) [n]: ").strip().lower()
-    interpolate_cell_to_point = interp_input == 'y'
+    interp_input = input("\nInterpolate cell data to point data? (y/n) [y]: ").strip().lower()
+    interpolate_cell_to_point = interp_input != 'n'
 
     return {
         'variables': selected_vars,
@@ -1141,10 +1196,13 @@ def main():
                 slices_data.append((variable, slice_data))
                 print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
 
-            save_path = None
-            if slice_config['save_fig'] and slice_config['save_dir']:
-                filename = f"combined_{slice_label}_slice.png"
-                save_path = os.path.join(slice_config['save_dir'], filename)
+            save_path = build_save_path(
+                slice_config['save_dir'],
+                'combined',
+                slice_label,
+                config['timestep'],
+                combined=True,
+            )
 
             plot_combined_slices(
                 slices_data, coord1, coord2, axis_labels, slice_info,
@@ -1161,10 +1219,13 @@ def main():
                 if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
                     slice_data, c1 = ut.apply_x_crop(slice_data, c1, slice_config['x_crop'])
 
-                save_path = None
-                if slice_config['save_fig'] and slice_config['save_dir']:
-                    filename = f"{variable}_{slice_label}_slice.png"
-                    save_path = os.path.join(slice_config['save_dir'], filename)
+                save_path = build_save_path(
+                    slice_config['save_dir'],
+                    variable,
+                    slice_label,
+                    config['timestep'],
+                    interpolated=variable in interpolated_vars,
+                )
 
                 plot_slice(
                     slice_data, c1, c2, axis_labels, variable,
@@ -1211,10 +1272,13 @@ def main():
                 print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
 
             # Build save path for combined figure
-            save_path = None
-            if slice_config['save_fig'] and slice_config['save_dir']:
-                filename = f"combined_{slice_config['plane']}_slice.png"
-                save_path = os.path.join(slice_config['save_dir'], filename)
+            save_path = build_save_path(
+                slice_config['save_dir'],
+                'combined',
+                slice_config['plane'],
+                config['timestep'],
+                combined=True,
+            )
 
             # Plot combined figure
             plot_combined_slices(
@@ -1243,10 +1307,13 @@ def main():
                     slice_data, coord1 = ut.apply_x_crop(slice_data, coord1, slice_config['x_crop'])
 
                 # Build save path for this variable
-                save_path = None
-                if slice_config['save_fig'] and slice_config['save_dir']:
-                    filename = f"{variable}_{slice_config['plane']}_slice.png"
-                    save_path = os.path.join(slice_config['save_dir'], filename)
+                save_path = build_save_path(
+                    slice_config['save_dir'],
+                    variable,
+                    slice_config['plane'],
+                    config['timestep'],
+                    interpolated=variable in interpolated_vars,
+                )
 
                 # Plot
                 plot_slice(
@@ -1271,6 +1338,10 @@ def main():
     while True:
         choice = input("\nPlot another slice? (y/n): ").strip().lower()
         if choice in ('y', 'yes'):
+            same_timestep = input("Same timestep? (y/n) [y]: ").strip().lower()
+            if same_timestep not in ('', 'y', 'yes'):
+                main()
+                return
             if is_2d_slice:
                 slice_config = get_2d_plot_config(var_metadata, grid_info, slice_label)
             else:
@@ -1314,9 +1385,13 @@ def main():
                             s_data, c1 = ut.apply_x_crop(s_data, c1, slice_config['x_crop'])
                         slices_data.append((variable, s_data))
                         print(f"\n{variable}: min={np.nanmin(s_data):.4e}, max={np.nanmax(s_data):.4e}, mean={np.nanmean(s_data):.4e}")
-                    save_path = None
-                    if slice_config['save_fig'] and slice_config['save_dir']:
-                        save_path = os.path.join(slice_config['save_dir'], f"combined_{slice_label}_slice.png")
+                    save_path = build_save_path(
+                        slice_config['save_dir'],
+                        'combined',
+                        slice_label,
+                        config['timestep'],
+                        combined=True,
+                    )
                     plot_combined_slices(
                         slices_data, c1, coord2, axis_labels, slice_info,
                         cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
@@ -1331,9 +1406,13 @@ def main():
                         c1, c2 = coord1, coord2
                         if slice_config['x_crop'] is not None and axis_info and axis_info['plane'] in ['xz', 'xy']:
                             s_data, c1 = ut.apply_x_crop(s_data, c1, slice_config['x_crop'])
-                        save_path = None
-                        if slice_config['save_fig'] and slice_config['save_dir']:
-                            save_path = os.path.join(slice_config['save_dir'], f"{variable}_{slice_label}_slice.png")
+                        save_path = build_save_path(
+                            slice_config['save_dir'],
+                            variable,
+                            slice_label,
+                            config['timestep'],
+                            interpolated=variable in interpolated_vars,
+                        )
                         plot_slice(
                             s_data, c1, c2, axis_labels, variable,
                             cmap=slice_config['cmap'], vmin=slice_config['vmin'],
@@ -1365,10 +1444,13 @@ def main():
                         slices_data.append((variable, slice_data))
                         print(f"\n{variable}: min={np.nanmin(slice_data):.4e}, max={np.nanmax(slice_data):.4e}, mean={np.nanmean(slice_data):.4e}")
 
-                    save_path = None
-                    if slice_config['save_fig'] and slice_config['save_dir']:
-                        filename = f"combined_{slice_config['plane']}_slice.png"
-                        save_path = os.path.join(slice_config['save_dir'], filename)
+                    save_path = build_save_path(
+                        slice_config['save_dir'],
+                        'combined',
+                        slice_config['plane'],
+                        config['timestep'],
+                        combined=True,
+                    )
                     plot_combined_slices(
                         slices_data, coord1, coord2, axis_labels, slice_info,
                         cmap=slice_config['cmap'], symmetric=slice_config['symmetric'],
@@ -1384,10 +1466,13 @@ def main():
                         )
                         if slice_config['x_crop'] is not None and slice_config['plane'] in ['xy', 'xz']:
                             slice_data, coord1 = ut.apply_x_crop(slice_data, coord1, slice_config['x_crop'])
-                        save_path = None
-                        if slice_config['save_fig'] and slice_config['save_dir']:
-                            filename = f"{variable}_{slice_config['plane']}_slice.png"
-                            save_path = os.path.join(slice_config['save_dir'], filename)
+                        save_path = build_save_path(
+                            slice_config['save_dir'],
+                            variable,
+                            slice_config['plane'],
+                            config['timestep'],
+                            interpolated=variable in interpolated_vars,
+                        )
                         plot_slice(
                             slice_data, coord1, coord2, axis_labels, variable,
                             cmap=slice_config['cmap'], vmin=slice_config['vmin'],
