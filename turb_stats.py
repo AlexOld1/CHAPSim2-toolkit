@@ -273,6 +273,11 @@ def create_data_loader(config: Config, data_types: List[str] = None):
     fmt = config.input_format.lower()
 
     if fmt in ['xdmf', 'visu']:
+        required_vars = _build_required_xdmf_vars(config)
+        re_stress_enabled = (config.u_prime_sq_on or config.u_prime_v_prime_on or
+                             config.v_prime_sq_on or config.w_prime_sq_on or config.tke_on)
+        re_stress_budget_enabled = config.re_stress_budget_on
+
         # Build data_types from what is actually enabled so we don't try
         # to read files that may not exist.
         # Note: tsp_avg data is stored as .txt in 1_data/, not as XDMF.
@@ -281,26 +286,31 @@ def create_data_loader(config: Config, data_types: List[str] = None):
         if data_types is None:
             data_types = []
 
-            re_stress_enabled = (config.u_prime_sq_on or config.u_prime_v_prime_on or
-                                 config.v_prime_sq_on or config.w_prime_sq_on or config.tke_on)
-
-            re_stress_budget_enabled = config.re_stress_budget_on
-
             # t_avg contains Reynolds stresses (uu11 etc.), gradient terms,
             # and mean velocities — used for both Re-stresses and TKE budgets
             if re_stress_enabled or re_stress_budget_enabled:
                 data_types.append('t_avg')
 
-            # Profiles only: load inst as fallback, t_avg preferred (processed
-            # second so it overwrites inst when both exist)
+            # Profiles-only runs should prefer t_avg, but fall back to
+            # instantaneous files when t_avg files are unavailable.
             if not data_types:
-                data_types = ['inst', 't_avg']
+                data_types = ['t_avg', 'inst']
+        else:
+            data_types = list(data_types)
+
+        # Safety guard: Re-stress and budget terms require t_avg files.
+        # Enforce this even when caller passes custom data_types.
+        if re_stress_enabled or re_stress_budget_enabled:
+            if not any(dtype == 't_avg' or dtype.startswith('t_avg_') for dtype in data_types):
+                data_types.append('t_avg')
+                print("Added 't_avg' to data_types because enabled stats require time-averaged fields.")
         print(f"Using XDMF data loader with data_types={data_types}...")
         return TurbulenceXDMFData(
             config.folder_path,
             config.cases,
             config.timesteps,
             data_types=data_types,
+            required_vars=required_vars,
             average_z=config.average_z_direction,
             average_x=config.average_x_direction,
             slice_label=config.slice_label if config.slice_label else None,
@@ -316,6 +326,46 @@ def create_data_loader(config: Config, data_types: List[str] = None):
         )
     else:
         raise ValueError(f"Unknown input_format: '{config.input_format}'. Must be 'dat', 'text', 'xdmf', or 'visu'")
+
+
+def _build_required_xdmf_vars(config: Config) -> Optional[set]:
+    """Build the minimal variable set required by enabled computations.
+
+    Returns ``None`` when broad loading is required (e.g., budget terms).
+    """
+    # TKE budget computations need many coupled terms; keep broad loading.
+    if config.re_stress_budget_on:
+        return None
+
+    required = set()
+
+    if config.ux_velocity_on:
+        required.add('u1')
+    if config.uy_velocity_on:
+        required.add('u2')
+    if config.uz_velocity_on:
+        required.add('u3')
+
+    if config.temp_on:
+        # Support common naming variants in thermo files.
+        required.update({'T', 'temperature', 'temp'})
+
+    if config.u_prime_sq_on:
+        required.update({'u1', 'uu11'})
+    if config.u_prime_v_prime_on:
+        required.update({'u1', 'u2', 'uu12'})
+    if config.v_prime_sq_on:
+        required.update({'u2', 'uu22'})
+    if config.w_prime_sq_on:
+        required.update({'u3', 'uu33'})
+    if config.tke_on:
+        required.update({'u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'})
+
+    # Ensure downstream normalization/flow-info/coordinate logic can run.
+    if required:
+        required.add('u1')
+
+    return required
     
 
 class TurbulenceTextData:
@@ -380,11 +430,12 @@ class TurbulenceXDMFData:
 
     def __init__(self, folder_path: str, cases: List[str], timesteps: List[str],
                  data_types: List[str] = None, average_z: bool = True, average_x: bool = False,
-                 slice_label: str = None, x_crop: str = ''):
+                 slice_label: str = None, x_crop: str = '', required_vars: Optional[set] = None):
         self.folder_path = folder_path
         self.cases = cases
         self.timesteps = timesteps
         self.data_types = data_types
+        self.required_vars = required_vars
         self.average_z = average_z
         self.average_x = average_x
         self.slice_label = slice_label
@@ -448,6 +499,7 @@ class TurbulenceXDMFData:
         arrays, grid_info = ut.xdmf_reader_wrapper(
             file_names, case=case, timestep=timestep,
             data_types=self.data_types,
+            required_vars=self.required_vars,
             average_z=self.average_z, average_x=self.average_x
         )
 

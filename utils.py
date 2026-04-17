@@ -418,7 +418,24 @@ def read_binary_data_item(data_item, xdmf_dir):
         print(f"Error reading {bin_path}: {e}")
         return None
 
-def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1):
+
+def _strip_avg_prefix(name):
+    """Return base variable name without known averaging prefixes."""
+    for prefix in ('t_avg_', 'tsp_avg_'):
+        if name.startswith(prefix):
+            return name[len(prefix):]
+    return name
+
+
+def _is_selected_variable(name, required_vars):
+    """Check whether an XDMF variable should be loaded."""
+    if required_vars is None:
+        return name in REQUIRED_VARS
+
+    base_name = _strip_avg_prefix(name)
+    return (name in required_vars) or (base_name in required_vars)
+
+def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1, required_vars=None):
     """
     Parse XDMF file and extract data from associated binary files.
 
@@ -427,6 +444,8 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1):
         load_all_vars: If True, load all variables. If False, only load required ones.
                        If None, uses module-level LOAD_ALL_VARS setting.
         output_dim: Desired output dimension (1, 2, or 3)
+        required_vars: Optional set/list of exact required variables (base or
+                   prefixed names). If None, uses module REQUIRED_VARS.
 
     Returns:
         tuple: (arrays dict, grid_info dict)
@@ -482,7 +501,7 @@ def parse_xdmf_file(xdmf_path, load_all_vars=None, output_dim=1):
             name = attribute.get('Name')
             data_item = attribute.find('DataItem')
             if data_item is not None:
-                if load_all_vars or name in REQUIRED_VARS:
+                if load_all_vars or _is_selected_variable(name, required_vars):
                     read_tasks.append(('array', name, data_item))
                 else:
                     skipped_vars.append(name)
@@ -741,6 +760,7 @@ def load_xdmf_variables(var_metadata, selected_vars, grid_info=None, output_dim=
 
 
 def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None, data_types=None,
+                         required_vars=None,
                          average_z=False, average_x=False):
     """
     Reads XDMF files and extracts numpy arrays from binary data.
@@ -759,6 +779,9 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
                 - ['t_avg'] loads only time-averaged files (flow, thermo, mhd)
                 - ['inst'] loads all instantaneous files (flow, thermo, mhd)
                 - ['t_avg_flow'] loads only time-averaged flow files
+
+        required_vars (set/list, optional): Minimal variable set to load.
+            If None, falls back to module REQUIRED_VARS.
 
     Returns:
         tuple: (visu_arrays_dic dict, grid_info dict)
@@ -833,7 +856,12 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
                 output_dim = 2
             else:
                 output_dim = 3
-            arrays, file_grid_info = parse_xdmf_file(xdmf_file, load_all_vars=load_all_vars, output_dim=output_dim)
+            arrays, file_grid_info = parse_xdmf_file(
+                xdmf_file,
+                load_all_vars=load_all_vars,
+                output_dim=output_dim,
+                required_vars=required_vars
+            )
 
             if arrays:
                 # Extract file type from filename for prefixing (optional)
