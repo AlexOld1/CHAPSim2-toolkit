@@ -41,11 +41,18 @@ class Config:
     forcing: str
     Re: List[float]
     ref_temp: List[float]
+    ref_length: List[float]
+    ref_bulk_velocity: List[float]
+    wall_heat_flux: List[float]
+    working_fluid: str
 
     ux_velocity_on: bool
     uy_velocity_on: bool
     uz_velocity_on: bool
     temp_on: bool
+    heat_transf_coeff_on: bool
+    Nusselt_number_on: bool
+    coeff_friction_on: bool
     tke_on: bool
     profile_direction: str
     slice_coords: str
@@ -96,10 +103,17 @@ class Config:
             forcing=getattr(config_module, 'forcing', 'CMF'),
             Re=getattr(config_module, 'Re', [1.0]),
             ref_temp=getattr(config_module, 'ref_temp', [300.0]),
+            ref_length=getattr(config_module, 'ref_length', [1.0]),
+            ref_bulk_velocity=getattr(config_module, 'ref_bulk_velocity', [1.0]),
+            wall_heat_flux=getattr(config_module, 'wall_heat_flux', [0.0]),
+            working_fluid=getattr(config_module, 'working_fluid', 'lithium'),
             ux_velocity_on=getattr(config_module, 'ux_velocity_on', False),
             uy_velocity_on=getattr(config_module, 'uy_velocity_on', False),
             uz_velocity_on=getattr(config_module, 'uz_velocity_on', False),
             temp_on=getattr(config_module, 'temp_on', False),
+            heat_transf_coeff_on=getattr(config_module, 'heat_transf_coeff_on', False),
+            Nusselt_number_on=getattr(config_module, 'Nusselt_number_on', False),
+            coeff_friction_on=getattr(config_module, 'coeff_friction_on', False),
             tke_on=getattr(config_module, 'tke_on', False),
             u_prime_sq_on=getattr(config_module, 'u_prime_sq_on', False),
             u_prime_v_prime_on=getattr(config_module, 'u_prime_v_prime_on', False),
@@ -230,6 +244,8 @@ class PlotConfig:
                 "v_prime_sq": "<v'v'>",
                 "w_prime_sq": "<w'w'>",
                 "TKE": "Turbulent Kinetic Energy",
+                "heat_transfer_coeff": "Heat Transfer Coefficient",
+                "nusselt_number": "Nusselt Number",
                 # TKE Budget terms
                 "production": "Production",
                 "dissipation": "Dissipation",
@@ -346,7 +362,7 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
     if config.uz_velocity_on:
         required.add('u3')
 
-    if config.temp_on:
+    if config.temp_on or config.heat_transf_coeff_on or config.Nusselt_number_on:
         # Support common naming variants in thermo files.
         required.update({'T', 'temperature', 'temp'})
 
@@ -825,20 +841,132 @@ class Temperature(Profiles):
             data_dict[quantity] = data_loader.get(case, quantity, timestep)
 
         ref_temp = float(self.ref_temps[self.cases.index(case)]) if len(self.ref_temps) > 1 else float(self.ref_temps[0])
-
-        if self.norm_temp_by_ref_temp:
-            result = op.read_profile(data_dict['T'])
-        else:
-            result = op.read_profile(data_dict['T']) * ref_temp
+        result = op.dimensionalize_temperature(op.read_profile(data_dict['T']), ref_temp, self.norm_temp_by_ref_temp)
 
         self.raw_results[(case, timestep)] = result
         return True
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
-        if self.norm_temp_by_ref_temp:
-            return op.read_profile(data_dict['T'])
+        return op.dimensionalize_temperature(
+            op.read_profile(data_dict['T']),
+            float(self.ref_temps[0]),
+            self.norm_temp_by_ref_temp,
+        )
+
+class FrictionCoefficient(Profiles):
+    """Wall friction coefficient profile (x-direction only)"""
+
+    def __init__(self, cases: List[str], Re: List[float]):
+        super().__init__('coeff_friction', 'Wall Friction Coefficient', ['u1'])
+        self.cases = cases
+        self.Re = Re
+        self.x_profile_only = True
+
+    def _get_ref_re(self, case: str) -> float:
+        return float(self.Re[self.cases.index(case)]) if len(self.Re) > 1 else float(self.Re[0])
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        """Compute friction coefficient from the wall gradient of ``u1``."""
+        if not data_loader.has(case, 'u1', timestep):
+            print(f"Missing u1 data for {self.name} calculation: {case}, {timestep}")
+            return False
+
+        data_dict = {'u1': data_loader.get(case, 'u1', timestep)}
+        ref_Re = self._get_ref_re(case)
+        y_coords = getattr(data_loader, 'y_coords', None)
+        result = self.compute(data_dict, ref_Re, y_coords)
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray], ref_Re: float = 1.0, y_coords: Optional[np.ndarray] = None) -> np.ndarray:
+        """Compute friction coefficient from near-wall interpolated velocity points."""
+        u1_data = data_dict['u1']
+        if u1_data.ndim == 3:
+            # Keep x-profile output by averaging z before wall operation.
+            u1_data = u1_data.mean(axis=2)
+        tau_w = op.compute_wall_shear_stress_from_velocity(u1_data, ref_Re, y_coords=y_coords)
+        return op.compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0)
+
+
+class HeatTransferCoefficient(Profiles):
+    """Wall heat transfer coefficient profile (x-direction only)."""
+
+    def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
+                 norm_temp_by_ref_temp: bool):
+        super().__init__('heat_transfer_coeff', 'Heat Transfer Coefficient', ['T'])
+        self.cases = cases
+        self.ref_temp = ref_temp
+        self.wall_heat_flux = wall_heat_flux
+        self.norm_temp_by_ref_temp = norm_temp_by_ref_temp
+        self.x_profile_only = True
+
+    def _case_value(self, values: List[float], case: str) -> float:
+        return float(values[self.cases.index(case)]) if len(values) > 1 else float(values[0])
+
+    def _compute_h_profile(self, temp_dim: np.ndarray, heat_flux: float, y_coords: Optional[np.ndarray]) -> np.ndarray:
+        if temp_dim.ndim == 1:
+            return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp_dim, y_coords=y_coords))
+        if temp_dim.ndim == 2:
+            return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp_dim, y_coords=y_coords))
+        if temp_dim.ndim == 3:
+            temp_yx = temp_dim.mean(axis=2)
+            return np.asarray(op.compute_wall_heat_transfer_coeff(heat_flux, temp_yx, y_coords=y_coords))
+        raise ValueError(f'Unsupported temperature data dimensions: {temp_dim.ndim}')
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        if not data_loader.has(case, 'T', timestep):
+            print(f"Missing T data for {self.name} calculation: {case}, {timestep}")
+            return False
+
+        temp_data = data_loader.get(case, 'T', timestep)
+        heat_flux = self._case_value(self.wall_heat_flux, case)
+        temp_ref = self._case_value(self.ref_temp, case)
+        y_coords = getattr(data_loader, 'y_coords', None)
+        temp_dim = op.dimensionalize_temperature(temp_data, temp_ref, self.norm_temp_by_ref_temp)
+        self.raw_results[(case, timestep)] = self._compute_h_profile(temp_dim, heat_flux, y_coords)
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.read_profile(data_dict['T'])
+
+
+class NusseltNumber(HeatTransferCoefficient):
+    """Wall Nusselt number profile (x-direction only)."""
+
+    def __init__(self, cases: List[str], ref_temp: List[float], wall_heat_flux: List[float],
+                 ref_length: List[float], working_fluid: str, norm_temp_by_ref_temp: bool):
+        super().__init__(cases, ref_temp, wall_heat_flux, norm_temp_by_ref_temp)
+        self.name = 'nusselt_number'
+        self.label = 'Local Nusselt Number'
+        self.ref_length = ref_length
+        self.fluid = ut.get_fluid_properties(working_fluid)
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        if not data_loader.has(case, 'T', timestep):
+            print(f"Missing T data for {self.name} calculation: {case}, {timestep}")
+            return False
+
+        temp_data = data_loader.get(case, 'T', timestep)
+        heat_flux = self._case_value(self.wall_heat_flux, case)
+        ref_len = self._case_value(self.ref_length, case)
+        temp_ref = self._case_value(self.ref_temp, case)
+        y_coords = getattr(data_loader, 'y_coords', None)
+        temp_dim = op.dimensionalize_temperature(temp_data, temp_ref, self.norm_temp_by_ref_temp)
+
+        h_profile = self._compute_h_profile(temp_dim, heat_flux, y_coords)
+        k_ref = float(self.fluid.thermal_conductivity(temp_ref))
+        fluid_props = {'k': k_ref}
+
+        if np.ndim(h_profile) == 0:
+            nu_profile = np.asarray(op.compute_wall_Nusselt_number(float(h_profile), ref_len, fluid_props))
         else:
-            return op.read_profile(data_dict['T']) * float(self.ref_temps[0])
+            nu_profile = np.asarray([
+                op.compute_wall_Nusselt_number(float(h), ref_len, fluid_props)
+                for h in np.ravel(h_profile)
+            ])
+
+        self.raw_results[(case, timestep)] = nu_profile
+        return True
 
 class TurbulentKineticEnergy(Profiles):
     """Turbulent Kinetic Energy (TKE)"""
@@ -1083,6 +1211,27 @@ class TurbulenceStatsPipeline:
         if self.config.temp_on:
             self.statistics.append(Temperature(self.config.norm_temp_by_ref_temp, self.config.ref_temp, self.config.cases))
 
+        if self.config.heat_transf_coeff_on:
+            self.statistics.append(HeatTransferCoefficient(
+                self.config.cases,
+                self.config.ref_temp,
+                self.config.wall_heat_flux,
+                self.config.norm_temp_by_ref_temp,
+            ))
+
+        if self.config.Nusselt_number_on:
+            self.statistics.append(NusseltNumber(
+                self.config.cases,
+                self.config.ref_temp,
+                self.config.wall_heat_flux,
+                self.config.ref_length,
+                self.config.working_fluid,
+                self.config.norm_temp_by_ref_temp,
+            ))
+
+        if self.config.coeff_friction_on:
+            self.statistics.append(FrictionCoefficient(self.config.cases, self.config.Re))
+
         # TKE Budget terms — single computer, thin wrappers per term
         re_stress_budget_enabled = self.config.re_stress_budget_on
 
@@ -1142,7 +1291,7 @@ class TurbulenceStatsPipeline:
                     ref_Re = op.get_ref_Re(case, self.config.cases, self.config.Re)
 
                     # Normalize (element-wise — works for any ndim)
-                    if self.config.norm_by_u_tau_sq and stat.name != 'temperature':
+                    if self.config.norm_by_u_tau_sq and stat.name not in ('temperature', 'coeff_friction', 'heat_transfer_coeff', 'nusselt_number'):
                         normed = op.norm_turb_stat_wrt_u_tau_sq(ux_data, values, ref_Re, y_coords=y_coords)
                     else:
                         normed = values
@@ -1153,7 +1302,8 @@ class TurbulenceStatsPipeline:
                         print(f'u1 velocity normalised by u_tau for {case}, {timestep}')
 
                     # Symmetric averaging along axis 0 (wall-normal direction)
-                    if self.config.half_channel_plot:
+                    is_x_profile_only = getattr(stat, 'x_profile_only', False)
+                    if self.config.half_channel_plot and not is_x_profile_only:
                         half = normed.shape[0] // 2
                         if stat.name != 'u_prime_v_prime' and stat.name != 'temperature':
                             normed_avg = op.symmetric_average(normed)
@@ -1183,11 +1333,13 @@ class TurbulenceStatsPipeline:
         grouped: Dict[str, List] = {
             'ReStresses': [],
             'Profiles': [],
-            'ReStressBudget': []
+            'ReStressBudget': [],
+            'TkeBudget': []
         }
         for stat in self.statistics:
             if isinstance(stat, TkeBudgetTerm):
                 grouped['ReStressBudget'].append(stat)
+                grouped['TkeBudget'].append(stat)
             elif isinstance(stat, ReStresses):
                 grouped['ReStresses'].append(stat)
             elif isinstance(stat, Profiles):
@@ -1272,6 +1424,8 @@ class TurbulencePlotter:
             'uy_velocity': '$U_y/U_{bulk}$',
             'uz_velocity': '$U_z/U_{bulk}$',
             'temperature': '$T$',
+            'heat_transfer_coeff': '$h$ (W/(m^2K))',
+            'nusselt_number': '$Nu$',
             'TKE': '$k/U_{bulk}^2$',
             'u_prime_sq': "$\\langle u'u' \\rangle/U_{bulk}^2$",
             'u_prime_v_prime': "$\\langle u'v' \\rangle/U_{bulk}^2$",
@@ -1286,7 +1440,7 @@ class TurbulencePlotter:
         if stat_name == 'ux_velocity' and self.config.norm_ux_by_u_tau:
             return '$U_x/u_\\tau$'
 
-        if self.config.norm_by_u_tau_sq:
+        if self.config.norm_by_u_tau_sq and stat_name not in ('coeff_friction', 'heat_transfer_coeff', 'nusselt_number'):
             if isinstance(base, str) and base.startswith('$') and base.endswith('$'):
                 return base[:-1] + '/u_\\tau^2$'
             return f'{base} / $u_\\tau^2$'
@@ -1373,12 +1527,29 @@ class TurbulencePlotter:
             indices.append((idx, float(y_coords[idx])))
         return indices
 
-    def _extract_x_profiles(self, values: np.ndarray) -> List[Tuple[str, np.ndarray]]:
-        """Extract 1-D streamwise profiles from 2-D (ny, nx) data at specified y locations."""
-        if values.ndim < 2:
+    def _extract_x_profiles(self, values: np.ndarray, stat=None) -> List[Tuple[str, np.ndarray]]:
+        """Extract 1-D streamwise profiles from native arrays."""
+        if values.ndim < 1:
             return []
+
+        if getattr(stat, 'x_profile_only', False):
+            if values.ndim == 1:
+                return [('', values)]
+            if values.ndim == 2:
+                return [('', values[0, :])]
+            if values.ndim == 3:
+                return [('', values[0, :, :].mean(axis=1))]
+            return []
+
+        if values.ndim == 1:
+            return [('', values)]
+
         y_indices = self._get_x_profile_y_indices()
-        return [(f' y={yv:.3g}', values[idx, :]) for idx, yv in y_indices]
+        if values.ndim == 2:
+            return [(f' y={yv:.3g}', values[idx, :]) for idx, yv in y_indices]
+        if values.ndim == 3:
+            return [(f' y={yv:.3g}', values[idx, :, :].mean(axis=1)) for idx, yv in y_indices]
+        return [('', np.ravel(values))]
 
     # ------------------------------------------------------------------
     # Public entry points
@@ -1411,12 +1582,16 @@ class TurbulencePlotter:
 
             # Y-direction (wall-normal) profile figures
             if self.config.profile_direction in ('y', 'both'):
-                class_title = class_titles.get(class_name, class_name)
-                fig = self._plot_class_figure(stats_list, class_title, reference_data)
-                figures[class_name] = fig
+                # Filter out x-profile-only statistics
+                y_profile_stats = [s for s in stats_list if not getattr(s, 'x_profile_only', False)]
+                if y_profile_stats:
+                    class_title = class_titles.get(class_name, class_name)
+                    fig = self._plot_class_figure(y_profile_stats, class_title, reference_data)
+                    figures[class_name] = fig
 
             # X-direction (streamwise) profile figures
             if self.config.profile_direction in ('x', 'both'):
+                # Include all stats (x-profile-only ones will plot correctly)
                 class_title = class_titles.get(class_name, class_name)
                 x_fig = self._plot_x_profile_figure(stats_list, class_title)
                 if x_fig is not None:
@@ -1749,7 +1924,7 @@ class TurbulencePlotter:
         for i, stat in enumerate(stats_with_2d):
             ax = axs[i // ncols, i % ncols]
             for (case, timestep), values in stat.processed_results.items():
-                profiles = self._extract_x_profiles(values)
+                profiles = self._extract_x_profiles(values, stat=stat)
                 for suffix, profile in profiles:
                     color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
                     label = self._build_legend_label(stat.label, case, timestep, suffix)

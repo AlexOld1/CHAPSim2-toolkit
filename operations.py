@@ -88,6 +88,71 @@ def compute_shear_stress(ux, uy, uv):
 def compute_tke(u_prime_sq, v_prime_sq, w_prime_sq):
     return 0.5 * (u_prime_sq + v_prime_sq + w_prime_sq)
 
+def compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0):
+    return tau_w / (0.5 * ref_rho * ref_bulk_velocity**2)
+
+# =====================================================================================================================================================
+# Thermo statistics functions
+# =====================================================================================================================================================
+
+def interpolate_wall_and_first_point(cell_data, y_coords=None):
+    """Interpolate only the wall point and first off-wall point from cell data.
+
+    The wall-normal direction is assumed to be axis 0 for native arrays.
+    Legacy 3-column arrays ``[idx, y, value]`` are also supported.
+
+    Returns:
+        tuple: (wall_value, first_point_value, delta_y_wall_to_first)
+    """
+    arr = np.asarray(cell_data)
+
+    # Legacy profile format: [idx, y, value]
+    if arr.ndim == 2 and arr.shape[1] == 3:
+        y = arr[:, 1]
+        val = arr[:, 2]
+        y0, y1 = float(y[0]), float(y[1])
+        v0, v1 = val[0], val[1]
+    else:
+        if arr.shape[0] < 2:
+            raise ValueError('Need at least two wall-normal cells for near-wall interpolation.')
+
+        v0, v1 = arr[0], arr[1]
+        if y_coords is not None:
+            y0, y1 = float(y_coords[0]), float(y_coords[1])
+        else:
+            # Unit spacing fallback for data without explicit y-coordinates.
+            y0, y1 = 0.0, 1.0
+
+    dy01 = y1 - y0
+    if dy01 == 0.0:
+        raise ValueError('Invalid wall-normal coordinates: first two points have zero spacing.')
+
+    y_wall = y0 - 0.5 * dy01
+    y_first = 0.5 * (y0 + y1)
+
+    slope = (v1 - v0) / dy01
+    wall_value = v0 + slope * (y_wall - y0)
+    first_point_value = v0 + slope * (y_first - y0)
+    delta_y = y_first - y_wall
+
+    return wall_value, first_point_value, float(delta_y)
+
+
+def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
+    """Compute wall shear stress from near-wall interpolated velocity points."""
+    u_wall, u_first, dy_wp = interpolate_wall_and_first_point(ux_data, y_coords=y_coords)
+    du_dy_wall = (u_first - u_wall) / dy_wp
+    mu = 1.0 / float(Re_bulk)
+    return mu * du_dy_wall
+
+def compute_wall_heat_transfer_coeff(heat_flux, temp, y_coords=None):
+    """Compute wall heat-transfer coefficient using near-wall interpolated points."""
+    wall_temp, fluid_temp, _ = interpolate_wall_and_first_point(temp, y_coords=y_coords)
+    return heat_flux / (wall_temp - fluid_temp)
+
+def compute_wall_Nusselt_number(heat_transfer_coeff, ref_length, ref_fluid_properties):
+    return heat_transfer_coeff * ref_length / ref_fluid_properties['k']
+
 # =====================================================================================================================================================
 # TKE Budget terms functions
 # =====================================================================================================================================================
@@ -544,6 +609,17 @@ def compute_mhd_term():
 # Normalisation & Averaging functions
 # =====================================================================================================================================================
 
+def dimensionalize_temperature(temp_data, ref_temp, norm_temp_by_ref_temp):
+    """Return dimensional temperature field/profile.
+
+    If ``norm_temp_by_ref_temp`` is True, input is assumed dimensional and is
+    returned unchanged. Otherwise values are scaled by ``ref_temp``.
+    """
+    temp_arr = np.asarray(temp_data)
+    if norm_temp_by_ref_temp:
+        return temp_arr
+    return temp_arr * float(ref_temp)
+
 def norm_turb_stat_wrt_u_tau_sq(ux_data, turb_stat, Re_bulk, y_coords=None):
     _, u_tau_sq, _ = _compute_u_tau_quantities(ux_data, Re_bulk, y_coords)
     return np.divide(np.asarray(turb_stat), u_tau_sq)
@@ -610,4 +686,114 @@ def compute_vorticity_omega_z(uy, ux, x, y):
     duxdy = np.gradient(ux, y)
     return duydx - duxdy
 
-# lamda2 and q criterion next
+def interpolate_cell_to_point_data(data):
+    """
+    Interpolate cell-centred data to point centres.
+    
+    Each point value is the average of all adjacent cells. Interior points use all 2^ndim
+    neighboring cells; boundary points use only adjacent cells.
+    """
+    ndim = data.ndim
+    
+    if ndim == 1:
+        nc = data.shape[0]
+        result = np.zeros(nc + 1, dtype=data.dtype)
+        result[0] = data[0]
+        result[1:-1] = 0.5 * (data[0:-1] + data[1:])
+        result[-1] = data[-1]
+        return result
+    
+    elif ndim == 2:
+        ncy, ncx = data.shape
+        result = np.zeros((ncy + 1, ncx + 1), dtype=data.dtype)
+        
+        # Interior points: average of 4 adjacent cells
+        result[1:-1, 1:-1] = 0.25 * (
+            data[0:-1, 0:-1] + data[0:-1, 1:] +
+            data[1:, 0:-1] + data[1:, 1:]
+        )
+        
+        # Corners
+        result[0, 0] = data[0, 0]
+        result[0, -1] = data[0, -1]
+        result[-1, 0] = data[-1, 0]
+        result[-1, -1] = data[-1, -1]
+        
+        # Edges: average of 2 adjacent cells
+        result[0, 1:-1] = 0.5 * (data[0, 0:-1] + data[0, 1:])
+        result[-1, 1:-1] = 0.5 * (data[-1, 0:-1] + data[-1, 1:])
+        result[1:-1, 0] = 0.5 * (data[0:-1, 0] + data[1:, 0])
+        result[1:-1, -1] = 0.5 * (data[0:-1, -1] + data[1:, -1])
+        
+        return result
+    
+    elif ndim == 3:
+        ncz, ncy, ncx = data.shape
+        result = np.zeros((ncz + 1, ncy + 1, ncx + 1), dtype=data.dtype)
+        
+        # Interior points: average of 8 adjacent cells
+        result[1:-1, 1:-1, 1:-1] = 0.125 * (
+            data[0:-1, 0:-1, 0:-1] + data[0:-1, 0:-1, 1:] +
+            data[0:-1, 1:, 0:-1] + data[0:-1, 1:, 1:] +
+            data[1:, 0:-1, 0:-1] + data[1:, 0:-1, 1:] +
+            data[1:, 1:, 0:-1] + data[1:, 1:, 1:]
+        )
+        
+        # Corners: single cell value
+        result[0, 0, 0] = data[0, 0, 0]
+        result[0, 0, -1] = data[0, 0, -1]
+        result[0, -1, 0] = data[0, -1, 0]
+        result[0, -1, -1] = data[0, -1, -1]
+        result[-1, 0, 0] = data[-1, 0, 0]
+        result[-1, 0, -1] = data[-1, 0, -1]
+        result[-1, -1, 0] = data[-1, -1, 0]
+        result[-1, -1, -1] = data[-1, -1, -1]
+        
+        # Edges (z-parallel, y-parallel, x-parallel): average of 2 cells
+        result[0, 0, 1:-1] = 0.5 * (data[0, 0, 0:-1] + data[0, 0, 1:])
+        result[0, -1, 1:-1] = 0.5 * (data[0, -1, 0:-1] + data[0, -1, 1:])
+        result[-1, 0, 1:-1] = 0.5 * (data[-1, 0, 0:-1] + data[-1, 0, 1:])
+        result[-1, -1, 1:-1] = 0.5 * (data[-1, -1, 0:-1] + data[-1, -1, 1:])
+        
+        result[0, 1:-1, 0] = 0.5 * (data[0, 0:-1, 0] + data[0, 1:, 0])
+        result[0, 1:-1, -1] = 0.5 * (data[0, 0:-1, -1] + data[0, 1:, -1])
+        result[-1, 1:-1, 0] = 0.5 * (data[-1, 0:-1, 0] + data[-1, 1:, 0])
+        result[-1, 1:-1, -1] = 0.5 * (data[-1, 0:-1, -1] + data[-1, 1:, -1])
+        
+        result[1:-1, 0, 0] = 0.5 * (data[0:-1, 0, 0] + data[1:, 0, 0])
+        result[1:-1, 0, -1] = 0.5 * (data[0:-1, 0, -1] + data[1:, 0, -1])
+        result[1:-1, -1, 0] = 0.5 * (data[0:-1, -1, 0] + data[1:, -1, 0])
+        result[1:-1, -1, -1] = 0.5 * (data[0:-1, -1, -1] + data[1:, -1, -1])
+        
+        # Faces (4 cells): xy-faces, xz-faces, yz-faces
+        result[0, 1:-1, 1:-1] = 0.25 * (
+            data[0, 0:-1, 0:-1] + data[0, 0:-1, 1:] +
+            data[0, 1:, 0:-1] + data[0, 1:, 1:]
+        )
+        result[-1, 1:-1, 1:-1] = 0.25 * (
+            data[-1, 0:-1, 0:-1] + data[-1, 0:-1, 1:] +
+            data[-1, 1:, 0:-1] + data[-1, 1:, 1:]
+        )
+        
+        result[1:-1, 0, 1:-1] = 0.25 * (
+            data[0:-1, 0, 0:-1] + data[0:-1, 0, 1:] +
+            data[1:, 0, 0:-1] + data[1:, 0, 1:]
+        )
+        result[1:-1, -1, 1:-1] = 0.25 * (
+            data[0:-1, -1, 0:-1] + data[0:-1, -1, 1:] +
+            data[1:, -1, 0:-1] + data[1:, -1, 1:]
+        )
+        
+        result[1:-1, 1:-1, 0] = 0.25 * (
+            data[0:-1, 0:-1, 0] + data[0:-1, 1:, 0] +
+            data[1:, 0:-1, 0] + data[1:, 1:, 0]
+        )
+        result[1:-1, 1:-1, -1] = 0.25 * (
+            data[0:-1, 0:-1, -1] + data[0:-1, 1:, -1] +
+            data[1:, 0:-1, -1] + data[1:, 1:, -1]
+        )
+        
+        return result
+    
+    else:
+        raise ValueError(f"Unsupported number of dimensions: {ndim}")

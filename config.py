@@ -7,11 +7,17 @@ input_format = 'visu' # 'text' (.dat) or 'visu' (.xdmf)
 cases = ['Tests'] # case names must match folder names exactly
 timesteps = ['680000']
 slice_label = '' # 2D slice label (e.g. 'yi8' for xz slice at y index 8), leave blank for full 3D data
-thermo_on = True    
-mhd_on = True
 forcing = 'CMF' # 'CMF' or 'CPG'
 Re = [5000] # indexing matches 'cases' if different Re used for different cases. Use bulk reference value for CPG.
-ref_temp = [670] # Kelvin
+
+thermo_on = True # Below reference values are used for thermo statistics, not necessary for isothermal flows
+ref_temp = [570] # Kelvin
+ref_length = [0.05] # m
+ref_bulk_velocity = [0.0900625] # m/s
+wall_heat_flux = [0.0] # W/m^2, positive for heating, negative for cooling
+working_fluid = 'lithium'
+
+mhd_on = True
 
 # Output ==============================================================================================================================================
 
@@ -19,8 +25,10 @@ ref_temp = [670] # Kelvin
 ux_velocity_on = True
 uy_velocity_on = False
 uz_velocity_on = False
-temp_on = True
-tke_on = True
+temp_on = False
+tke_on = False
+coeff_friction_on = False
+
 profile_direction = 'y' # 'y' (wall-normal), 'x' (streamwise), or 'both'
 slice_coords = '' # y-profiles: x coords for slices, e.g. '0.5,1.0' (blank = streamwise avg)
 x_crop = '' # x-range crop for 2D visu data, e.g. '0.0,1.0' (blank = full x-range)
@@ -28,16 +36,20 @@ x_profile_y_coords = '' # x-profiles: y coords for slices, e.g. '0.0,0.5' (blank
 surface_plot_on = False # Plot 2D (y,x) surface contour maps of each statistic (requires 2D data)
 
 # Reynolds stresses
-u_prime_sq_on = True
-u_prime_v_prime_on = True
-w_prime_sq_on = True
-v_prime_sq_on = True
+u_prime_sq_on = False
+u_prime_v_prime_on = False
+w_prime_sq_on = False
+v_prime_sq_on = False
 
 # Reynolds Stress Budget terms
-re_stress_budget_on = True
+re_stress_budget_on = False
 re_stress_component = 'uu11' # 'total' or 'uu11', 'uu12' etc. for individual components
 average_z_direction = True # Averaging valid for periodic directions
 average_x_direction = False
+
+# thermo statistics
+heat_transf_coeff_on = False
+Nusselt_number_on = False
 
 # Processing options ----------------------------------------------------------------------------------------------------------------------------------
 
