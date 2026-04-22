@@ -1898,13 +1898,20 @@ class TurbulencePlotter:
             print('No x_coords available for x-direction profiles.')
             return None
 
-        # Filter to stats with 2-D data
-        stats_with_2d = [s for s in statistics
-                         if any(v.ndim >= 2 for v in s.processed_results.values())]
-        if not stats_with_2d:
+        # Include stats that can produce streamwise profiles:
+        # - native 2-D/3-D fields
+        # - x_profile_only stats that are already reduced to 1-D x-profiles
+        stats_with_x_profiles = [
+            s for s in statistics
+            if s.processed_results and any(
+                (v.ndim >= 2) or (getattr(s, 'x_profile_only', False) and v.ndim == 1)
+                for v in s.processed_results.values()
+            )
+        ]
+        if not stats_with_x_profiles:
             return None
 
-        n_stats = len(stats_with_2d)
+        n_stats = len(stats_with_x_profiles)
         ncols = math.ceil(math.sqrt(n_stats))
         nrows = math.ceil(n_stats / ncols)
 
@@ -1919,7 +1926,7 @@ class TurbulencePlotter:
             if axs.shape[0] == 1 and nrows > 1:
                 axs = axs.T
 
-        for i, stat in enumerate(stats_with_2d):
+        for i, stat in enumerate(stats_with_x_profiles):
             ax = axs[i // ncols, i % ncols]
             for (case, timestep), values in stat.processed_results.items():
                 profiles = self._extract_x_profiles(values, stat=stat)
@@ -2183,7 +2190,10 @@ def main():
         figures = plotter.plot_by_class(grouped_stats, reference_data)
 
         if config.save_fig:
-            plotter.save_figures_by_class(figures)
+            if figures:
+                plotter.save_figures_by_class(figures)
+            else:
+                print('No figures were generated for the current profile_direction/stat configuration.')
 
         if config.display_fig:
             plotter.display_figure()
