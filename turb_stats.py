@@ -428,9 +428,7 @@ class TurbulenceTextData:
     def get(self, case: str, quantity: str, timestep: str) -> Optional[np.ndarray]:
         """Get specific data array"""
         key = f"{case}_{timestep}"
-        if key in self.data and quantity in self.data[key]:
-            return self.data[key][quantity]
-        return None
+        return self.data.get(key, {}).get(quantity)
 
     def has(self, case: str, quantity: str, timestep: str) -> bool:
         """Check if data exists"""
@@ -2098,6 +2096,7 @@ class TurbulencePlotter:
         else:
             filename = f'turb_stats_plot{suffix}.png' if suffix else 'turb_stats_plot.png'
         if self.config.save_to_path and self.config.folder_path:
+            os.makedirs(self.config.folder_path, exist_ok=True)
             save_path = os.path.join(self.config.folder_path, filename)
             fig.savefig(save_path,
                         dpi=300,
@@ -2108,21 +2107,21 @@ class TurbulencePlotter:
                         transparent=True,
                         orientation='landscape')
             print(f'Figure saved to {save_path}')
+        elif self.config.save_to_path and not self.config.folder_path:
+            print('save_to_path is enabled but folder_path is empty; using turb_stats_plots fallback.')
 
         output_dir = os.path.join(os.getcwd(), 'turb_stats_plots')
-        if os.path.isdir(output_dir):
-            output_path = os.path.join(output_dir, filename)
-            fig.savefig(output_path,
-                       dpi=300,
-                       bbox_inches='tight',
-                       pad_inches=0.1,
-                       facecolor='white',
-                       edgecolor='none',
-                       transparent=True,
-                       orientation='landscape')
-            print(f'Figure saved to {output_path}')
-        else:
-            print('Skipping turb_stats_plots save because the directory does not exist in the current working directory.')
+        os.makedirs(output_dir, exist_ok=True)
+        output_path = os.path.join(output_dir, filename)
+        fig.savefig(output_path,
+                   dpi=300,
+                   bbox_inches='tight',
+                   pad_inches=0.1,
+                   facecolor='white',
+                   edgecolor='none',
+                   transparent=True,
+                   orientation='landscape')
+        print(f'Figure saved to {output_path}')
 
     def save_figures_by_class(self, figures: Dict[str, Any]) -> None:
         """Save multiple figures, one for each class type"""
