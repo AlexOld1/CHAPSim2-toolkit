@@ -95,30 +95,49 @@ def compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0):
 # Thermo statistics functions
 # =====================================================================================================================================================
 
-def interpolate_wall_and_first_point(cell_data, y_coords=None):
-    """Interpolate only the wall point and first off-wall point from cell data.
+def interpolate_wall_point(cell_data, y_coords=None, wall='lower'):
+    """Interpolate a wall value from the two nearest cell-centre values.
 
     The wall-normal direction is assumed to be axis 0 for native arrays.
     Legacy 3-column arrays ``[idx, y, value]`` are also supported.
 
+    Args:
+        cell_data: Field values on cell centres.
+        y_coords: Optional wall-normal cell-centre coordinates for native arrays.
+        wall: Which wall to interpolate from: ``'lower'`` or ``'upper'``.
+
     Returns:
-        tuple: (wall_value, first_point_value, delta_y_wall_to_first)
+        Interpolated wall value with the same trailing shape as one y-slice.
     """
+    if wall not in ('lower', 'upper'):
+        raise ValueError("wall must be either 'lower' or 'upper'.")
+
     arr = np.asarray(cell_data)
 
     # Legacy profile format: [idx, y, value]
     if arr.ndim == 2 and arr.shape[1] == 3:
         y = arr[:, 1]
         val = arr[:, 2]
-        y0, y1 = float(y[0]), float(y[1])
-        v0, v1 = val[0], val[1]
+        if wall == 'lower':
+            y0, y1 = float(y[0]), float(y[1])
+            v0, v1 = val[0], val[1]
+        else:
+            y0, y1 = float(y[-1]), float(y[-2])
+            v0, v1 = val[-1], val[-2]
     else:
         if arr.shape[0] < 2:
             raise ValueError('Need at least two wall-normal cells for near-wall interpolation.')
 
-        v0, v1 = arr[0], arr[1]
+        if wall == 'lower':
+            v0, v1 = arr[0], arr[1]
+        else:
+            v0, v1 = arr[-1], arr[-2]
+
         if y_coords is not None:
-            y0, y1 = float(y_coords[0]), float(y_coords[1])
+            if wall == 'lower':
+                y0, y1 = float(y_coords[0]), float(y_coords[1])
+            else:
+                y0, y1 = float(y_coords[-1]), float(y_coords[-2])
         else:
             # Unit spacing fallback for data without explicit y-coordinates.
             y0, y1 = 0.0, 1.0
@@ -128,26 +147,41 @@ def interpolate_wall_and_first_point(cell_data, y_coords=None):
         raise ValueError('Invalid wall-normal coordinates: first two points have zero spacing.')
 
     y_wall = y0 - 0.5 * dy01
-    y_first = 0.5 * (y0 + y1)
 
     slope = (v1 - v0) / dy01
     wall_value = v0 + slope * (y_wall - y0)
-    first_point_value = v0 + slope * (y_first - y0)
-    delta_y = y_first - y_wall
-
-    return wall_value, first_point_value, float(delta_y)
+    return wall_value
 
 
 def compute_wall_shear_stress_from_velocity(ux_data, Re_bulk, y_coords=None):
     """Compute wall shear stress from near-wall interpolated velocity points."""
-    u_wall, u_first, dy_wp = interpolate_wall_and_first_point(ux_data, y_coords=y_coords)
-    du_dy_wall = (u_first - u_wall) / dy_wp
+    arr = np.asarray(ux_data)
+    if arr.ndim == 2 and arr.shape[1] == 3:
+        y0, y1 = float(arr[0, 1]), float(arr[1, 1])
+        u0 = arr[0, 2]
+    else:
+        if arr.shape[0] < 2:
+            raise ValueError('Need at least two wall-normal cells for near-wall shear stress.')
+        u0 = arr[0]
+        if y_coords is not None:
+            y0, y1 = float(y_coords[0]), float(y_coords[1])
+        else:
+            y0, y1 = 0.0, 1.0
+
+    dy01 = y1 - y0
+    if dy01 == 0.0:
+        raise ValueError('Invalid wall-normal coordinates: first two points have zero spacing.')
+
+    u_wall = interpolate_wall_point(ux_data, y_coords=y_coords, wall='lower')
+    dy_wall_to_first_cell = 0.5 * dy01
+    du_dy_wall = (u0 - u_wall) / dy_wall_to_first_cell
     mu = 1.0 / float(Re_bulk)
     return mu * du_dy_wall
 
 def compute_wall_heat_transfer_coeff(heat_flux, temp, y_coords=None):
-    """Compute wall heat-transfer coefficient using near-wall interpolated points."""
-    wall_temp, fluid_temp, _ = interpolate_wall_and_first_point(temp, y_coords=y_coords)
+    """Compute wall heat-transfer coefficient using opposite-wall fluid temperature."""
+    wall_temp = interpolate_wall_point(temp, y_coords=y_coords, wall='lower')
+    fluid_temp = interpolate_wall_point(temp, y_coords=y_coords, wall='upper')
     return heat_flux / (wall_temp - fluid_temp)
 
 def compute_wall_Nusselt_number(heat_transfer_coeff, ref_length, ref_fluid_properties):
