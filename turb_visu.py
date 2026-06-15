@@ -7,6 +7,7 @@ import pyvista as pv
 from tqdm import tqdm
 
 import utils as ut
+import operations as op
 
 try:
     import readline
@@ -64,38 +65,6 @@ def build_pyvista_grid(grid_info, data_dict, stride=1):
         grid.cell_data[name] = sampled.flatten()
 
     return grid
-
-
-def compute_q_criterion(data_dict, grid_info):
-    """
-    Compute Q-criterion from velocity components qx_ccc, qy_ccc, qz_ccc.
-
-    Q = -0.5 * (A_ij * A_ji) where A_ij = du_i/dx_j.
-    Positive Q identifies vortex cores (rotation dominates strain).
-    """
-    for req in ('qx_ccc', 'qy_ccc', 'qz_ccc'):
-        if req not in data_dict:
-            print(f"  Cannot compute Q-criterion: '{req}' not loaded.")
-            return None
-
-    x_cell = 0.5 * (grid_info['grid_x'][:-1] + grid_info['grid_x'][1:])
-    y_cell = 0.5 * (grid_info['grid_y'][:-1] + grid_info['grid_y'][1:])
-    z_cell = 0.5 * (grid_info['grid_z'][:-1] + grid_info['grid_z'][1:])
-
-    print("  Computing velocity gradients (this may take a moment)...")
-    u, v, w = data_dict['qx_ccc'], data_dict['qy_ccc'], data_dict['qz_ccc']
-
-    # np.gradient returns [d/dz, d/dy, d/dx] for shape (nz, ny, nx)
-    du_dz, du_dy, du_dx = np.gradient(u, z_cell, y_cell, x_cell)
-    dv_dz, dv_dy, dv_dx = np.gradient(v, z_cell, y_cell, x_cell)
-    dw_dz, dw_dy, dw_dx = np.gradient(w, z_cell, y_cell, x_cell)
-
-    Q = -0.5 * (
-        du_dx**2 + dv_dy**2 + dw_dz**2
-        + 2.0 * (du_dy * dv_dx + du_dz * dw_dx + dv_dz * dw_dy)
-    )
-    return Q
-
 
 # ---------------------------------------------------------------------------
 # User interaction helpers
@@ -194,7 +163,6 @@ def get_visualization_config(var_metadata, grid_info):
     print(f"\nAvailable variables ({len(variables)}):")
     for i, var in enumerate(variables, 1):
         print(f"  {i:2d}. {var:25s}  shape: {var_metadata[var]['shape']}")
-    print(f"  {len(variables)+1:2d}. {'Q-criterion':25s}  (requires qx_ccc, qy_ccc, qz_ccc)")
 
     print("\nModes:  1. Slice   2. Iso-surface   3. Volume rendering   4. Streamlines   5. Glyphs")
     mode = {'2': 'iso', '3': 'volume', '4': 'streamlines', '5': 'glyphs',
@@ -202,18 +170,27 @@ def get_visualization_config(var_metadata, grid_info):
         input("Mode [1]: ").strip(), 'slice')
 
     var_choice = input(f"\nVariable [1]: ").strip()
-    use_q = (var_choice == str(len(variables) + 1) or var_choice.lower() == 'q')
+    try:
+        idx = (int(var_choice) - 1) if var_choice else 0
+    except ValueError:
+        idx = variables.index(var_choice) if var_choice in variables else 0
+    variable = variables[max(0, min(idx, len(variables) - 1))]
+    selected_vars = [variable]
+
+    # ---- Statistics (ordered by complexity) ----
+    print("\nStatistics:  1. None   2. Fluctuation (u' = u_inst − u_t_avg)   3. Q-criterion")
+    stat_choice = input("Statistic [1]: ").strip()
+    use_fluc = stat_choice in ('2', 'fluc', 'fluctuation')
+    use_q    = stat_choice in ('3', 'q', 'q-criterion', 'qcriterion')
+
+    t_avg_xdmf = None
+    if use_fluc:
+        t_avg_xdmf = input("  Path to t_avg xdmf file: ").strip()
+        if not os.path.isfile(t_avg_xdmf):
+            print(f"  Warning: t_avg file not found: {t_avg_xdmf}")
 
     if use_q:
-        variable = 'Q-criterion'
-        selected_vars = ['qx_ccc', 'qy_ccc', 'qz_ccc']
-    else:
-        try:
-            idx = (int(var_choice) - 1) if var_choice else 0
-        except ValueError:
-            idx = variables.index(var_choice) if var_choice in variables else 0
-        variable = variables[max(0, min(idx, len(variables) - 1))]
-        selected_vars = [variable]
+        selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
 
     cmap = choose_colormap('viridis' if mode in ('iso', 'streamlines') else 'RdBu_r')
 
@@ -225,6 +202,8 @@ def get_visualization_config(var_metadata, grid_info):
         'variable': variable,
         'selected_vars': selected_vars,
         'use_q_criterion': use_q,
+        'use_fluc': use_fluc,
+        't_avg_xdmf': t_avg_xdmf,
         'cmap': cmap,
     }
 
@@ -481,11 +460,28 @@ def main():
         print("Error: Failed to load data.")
         return
 
-    if vis_cfg['use_q_criterion']:
-        q = compute_q_criterion(data, grid_info)
+    use_q    = vis_cfg['use_q_criterion']
+    use_fluc = vis_cfg['use_fluc']
+    t_avg_xdmf = vis_cfg.get('t_avg_xdmf')
+    variable = vis_cfg['variable']
+
+    t_avg_data = {}
+    if use_fluc and t_avg_xdmf:
+        print(f"Loading t_avg data from {t_avg_xdmf}...")
+        t_avg_meta, _ = ut.parse_xdmf_metadata(t_avg_xdmf)
+        t_avg_load_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'}) if use_q else [variable]
+        t_avg_data = ut.load_xdmf_variables(t_avg_meta, t_avg_load_vars, grid_info=grid_info)
+
+    if use_q:
+        q = op.compute_q_criterion(data, grid_info)
         if q is None:
             return
         data['Q-criterion'] = q
+        vis_cfg['variable'] = 'Q-criterion'
+    elif use_fluc and t_avg_data:
+        fluc_name = f"{variable}'"
+        data[fluc_name] = op.compute_inst_fluc(data[variable], t_avg_data[variable])
+        vis_cfg['variable'] = fluc_name
 
     print("Building PyVista grid...")
     grid = build_pyvista_grid(grid_info, data, stride=stride)

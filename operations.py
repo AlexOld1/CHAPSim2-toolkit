@@ -1061,6 +1061,42 @@ def compute_total_non_uniform():
 # =====================================================================================================================================================
 
 # =====================================================================================================================================================
+# Coherent Structures/ Vortex Analysis
+# =====================================================================================================================================================
+
+def compute_q_criterion(data_dict, grid_info):
+    """
+    Compute Q-criterion from velocity components qx_ccc, qy_ccc, qz_ccc.
+
+    Q is the second invariant of the velocity gradient tensor A (Jeong & Hussain, JFM 1995):
+      Q = 1/2 * ((tr A)^2 - tr(A^2)) = 1/2 * (||Omega||^2 - ||S||^2)
+    Component form: A11*A22 + A22*A33 + A11*A33 - A12*A21 - A23*A32 - A13*A31
+    Positive Q identifies vortex cores where rotation dominates strain.
+    """
+    for req in ('qx_ccc', 'qy_ccc', 'qz_ccc'):
+        if req not in data_dict:
+            print(f"  Cannot compute Q-criterion: '{req}' not loaded.")
+            return None
+
+    x_cell = 0.5 * (grid_info['grid_x'][:-1] + grid_info['grid_x'][1:])
+    y_cell = 0.5 * (grid_info['grid_y'][:-1] + grid_info['grid_y'][1:])
+    z_cell = 0.5 * (grid_info['grid_z'][:-1] + grid_info['grid_z'][1:])
+
+    print("  Computing velocity gradients (this may take a moment)...")
+    u, v, w = data_dict['qx_ccc'], data_dict['qy_ccc'], data_dict['qz_ccc']
+
+    # np.gradient returns [d/dz, d/dy, d/dx] for shape (nz, ny, nx)
+    du_dz, du_dy, du_dx = np.gradient(u, z_cell, y_cell, x_cell)
+    dv_dz, dv_dy, dv_dx = np.gradient(v, z_cell, y_cell, x_cell)
+    dw_dz, dw_dy, dw_dx = np.gradient(w, z_cell, y_cell, x_cell)
+
+    # Second invariant of A: I2 = 1/2*((tr A)^2 - tr(A^2))
+    # Component form: A11*A22 + A22*A33 + A11*A33 - A12*A21 - A23*A32 - A13*A31
+    Q = (du_dx*dv_dy + dv_dy*dw_dz + du_dx*dw_dz
+         - du_dy*dv_dx - dv_dz*dw_dy - du_dz*dw_dx)
+    return Q
+
+# =====================================================================================================================================================
 # Vorticity functions
 # =====================================================================================================================================================
 

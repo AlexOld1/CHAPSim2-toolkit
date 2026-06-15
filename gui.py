@@ -1785,11 +1785,15 @@ class TurbVisuTab(ttk.Frame):
         self._var_lb.pack(side='left', fill='both', expand=True)
         sb2.pack(side='right', fill='y')
 
-        self._use_q = tk.BooleanVar(value=False)
-        ttk.Checkbutton(
-            f, text='Q-criterion  (requires qx_ccc, qy_ccc, qz_ccc)',
-            variable=self._use_q,
-        ).pack(anchor='w', padx=4, pady=2)
+        # ---- Statistics ----
+        s = sec('Statistics')
+        self._stat_mode = tk.StringVar(value='none')
+        for val, label in [
+            ('none',        'None'),
+            ('fluctuation', "Fluctuation  (u' = u_inst - u_t_avg)"),
+            ('q_criterion', 'Q-criterion  (requires qx_ccc, qy_ccc, qz_ccc)'),
+        ]:
+            ttk.Radiobutton(s, text=label, variable=self._stat_mode, value=val).pack(anchor='w', padx=4, pady=1)
 
         # ---- Visualisation mode ----
         s = sec('Visualisation')
@@ -1967,10 +1971,12 @@ class TurbVisuTab(ttk.Frame):
     # ------ Render -------------------------------------------------------------------
 
     def _render(self):
-        use_q = self._use_q.get()
+        stat_mode = self._stat_mode.get()
+        use_q    = (stat_mode == 'q_criterion')
+        use_fluc = (stat_mode == 'fluctuation')
         variable = self._selected_var()
         if not use_q and variable is None:
-            messagebox.showwarning('No variable', 'Select a variable or enable Q-criterion.')
+            messagebox.showwarning('No variable', 'Select a variable.')
             return
         if not self._var_meta:
             messagebox.showwarning('No metadata', 'Load variables first.')
@@ -1981,8 +1987,7 @@ class TurbVisuTab(ttk.Frame):
         stride = max(1, self._stride.get())
 
         if use_q:
-            variable      = 'Q-criterion'
-            selected_vars = ['qx_ccc', 'qy_ccc', 'qz_ccc']
+            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'})
         else:
             selected_vars = [variable]
 
@@ -1994,6 +1999,15 @@ class TurbVisuTab(ttk.Frame):
 
         gi = self._grid_info
 
+        # t_avg xdmf path — used when fluctuation is requested
+        t_avg_xdmf = os.path.join(
+            self._visu_folder(),
+            f'domain1_t_avg_{self._phys.get()}_{self._ts.get()}.xdmf',
+        )
+
+        # Common statistics keys added to every cfg
+        stats = {'use_q_criterion': use_q, 'use_fluc': use_fluc, 't_avg_xdmf': t_avg_xdmf}
+
         if mode == 'slice':
             def _mid(key):
                 arr = gi.get(key)
@@ -2002,7 +2016,7 @@ class TurbVisuTab(ttk.Frame):
                 'mode': 'slice',
                 'variable': variable,
                 'cmap': cmap,
-                'use_q_criterion': use_q,
+                **stats,
                 'cut_x': _parse_float(self._cut_x.get(), _mid('grid_x')),
                 'cut_y': _parse_float(self._cut_y.get(), _mid('grid_y')),
                 'cut_z': _parse_float(self._cut_z.get(), _mid('grid_z')),
@@ -2016,7 +2030,7 @@ class TurbVisuTab(ttk.Frame):
                 'mode': 'iso',
                 'variable': variable,
                 'cmap': cmap,
-                'use_q_criterion': use_q,
+                **stats,
                 'iso_min': _parse_float(self._iso_min.get(), None),
                 'iso_max': _parse_float(self._iso_max.get(), None),
                 'iso_steps': iso_steps,
@@ -2026,7 +2040,7 @@ class TurbVisuTab(ttk.Frame):
                 'mode': 'volume',
                 'variable': variable,
                 'cmap': cmap,
-                'use_q_criterion': use_q,
+                **stats,
                 'opacity': self._opacity.get(),
             }
         elif mode == 'streamlines':
@@ -2042,7 +2056,7 @@ class TurbVisuTab(ttk.Frame):
                 'mode': 'streamlines',
                 'variable': variable,
                 'cmap': cmap,
-                'use_q_criterion': use_q,
+                **stats,
                 'stream_seed':      self._stream_seed.get(),
                 'stream_cx':        _parse_float(self._stream_cx.get(), None),
                 'stream_cy':        _parse_float(self._stream_cy.get(), None),
@@ -2064,7 +2078,7 @@ class TurbVisuTab(ttk.Frame):
                 'mode': 'glyphs',
                 'variable': variable,
                 'cmap': cmap,
-                'use_q_criterion': use_q,
+                **stats,
                 'glyph_factor':  _parse_float(self._glyph_factor.get(), None),
                 'glyph_every_n': int(self._glyph_every_n.get()) if self._glyph_every_n.get().strip().isdigit() else None,
                 'glyph_type':    self._glyph_type.get(),
@@ -2076,7 +2090,7 @@ class TurbVisuTab(ttk.Frame):
         def worker():
             try:
                 import turb_visu as tv
-                from utils import load_xdmf_variables
+                from utils import load_xdmf_variables, parse_xdmf_metadata
 
                 self._log(f'Loading {selected_vars}…')
                 data = load_xdmf_variables(var_meta, selected_vars, grid_info=gi)
@@ -2084,12 +2098,21 @@ class TurbVisuTab(ttk.Frame):
                     self._log('Error: failed to load data.')
                     return
 
+                import operations as op
                 if use_q:
                     self._log('Computing Q-criterion…')
-                    q = tv.compute_q_criterion(data, gi)
+                    q = op.compute_q_criterion(data, gi)
                     if q is None:
                         return
                     data['Q-criterion'] = q
+                    cfg['variable'] = 'Q-criterion'
+                elif use_fluc:
+                    self._log(f"Computing fluctuation {variable}'…")
+                    t_avg_meta, _ = parse_xdmf_metadata(cfg['t_avg_xdmf'])
+                    t_avg_data = load_xdmf_variables(t_avg_meta, [variable], grid_info=gi)
+                    fluc_name = f"{variable}'"
+                    data[fluc_name] = op.compute_inst_fluc(data[variable], t_avg_data[variable])
+                    cfg['variable'] = fluc_name
 
                 self._log('Building grid…')
                 grid = tv.build_pyvista_grid(gi, data, stride=stride)
