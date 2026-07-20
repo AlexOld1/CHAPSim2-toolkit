@@ -148,11 +148,17 @@ def plot_with_avg(ax, time, data, label, color, window):
                 rasterized=True)
 
 
-def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE, sample=1):
+def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE, sample=1, usecols=None):
     """
     Load monitor data and drop diverged/invalid rows.
     Sample > 1 skips rows during parsing.
 
+    Some monitor files gain an extra leading 'iterations' column partway
+    through a run. The columns we actually want are always the last N
+    fields of each row, so selecting them with negative `usecols` handles
+    both the old and new layouts without caring how many columns precede
+    them (np.loadtxt resolves negative indices per row, so a mix of 7- and
+    8-column rows in the same file is fine).
     """
     try:
         with open(file_path, 'r') as f:
@@ -161,7 +167,7 @@ def load_monitor_data(file_path, skiprows, max_abs_value=MAX_ABS_VALUE, sample=1
             lines = f if sample <= 1 else (
                 line for i, line in enumerate(f) if i % sample == 0
             )
-            data = np.loadtxt(lines, dtype=np.float64)
+            data = np.loadtxt(lines, dtype=np.float64, usecols=usecols)
     except Exception as e:
         print(f"Warning: Could not load {os.path.basename(file_path)}: {e}")
         return np.empty((0, 0))
@@ -248,8 +254,11 @@ blk_files = ['domain1_monitor_metrics_history.log', 'domain1_monitor_change_hist
 # ====================================================================================================================================================
  
 if plt_pts:
+    pt_usecols = (-7, -6, -5, -4, -3, -2, -1) if thermo_on else (-6, -5, -4, -3, -2, -1)
+
     for file in pt_files:
-        data = load_monitor_data(path + file, skiprows=3, sample=sample_factor)
+        data = load_monitor_data(path + file, skiprows=3, sample=sample_factor,
+                                  usecols=pt_usecols)
 
         if data.size == 0:
             print(f"Skipping {file}: no valid data after filtering.")
@@ -257,14 +266,14 @@ if plt_pts:
 
         print(f'Plotting {len(data)} points for {file}...')
 
-        time = data[:,1]
-        u = data[:,2]
-        v = data[:,3]
-        w = data[:,4]
-        p = data[:,5]
-        phi = data[:,6]
+        time = data[:,0]
+        u = data[:,1]
+        v = data[:,2]
+        w = data[:,3]
+        p = data[:,4]
+        phi = data[:,5]
         if thermo_on:
-            T = data[:,7]
+            T = data[:,6]
 
         # Create subplots for all variables
         num_subplots = 6 if thermo_on else 5
@@ -445,3 +454,4 @@ if plt_bulk:
 print('='*100)
 print(f'All plots saved to: {path}')
 print('='*100)
+a
