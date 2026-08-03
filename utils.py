@@ -1297,12 +1297,17 @@ def _extract_data_item_params(data_item, xdmf_dir):
     }
 
 
-def _read_binary_from_params(params):
+def _read_binary_from_params(params, stride=1):
     """
     Read binary data using pre-extracted parameters (from _extract_data_item_params).
 
     Args:
         params: dict with bin_path, dims, dtype, seek
+        stride: subsample every `stride`-th element along each axis. When >1
+            and `dims` has more than one axis, the file is memory-mapped so
+            only the strided subset is ever paged into RAM — large domains
+            no longer need to be fully resident just to build a decimated
+            (e.g. PyVista) grid.
 
     Returns:
         numpy array or None on failure
@@ -1313,6 +1318,12 @@ def _read_binary_from_params(params):
     seek = params['seek']
 
     try:
+        if stride > 1 and dims and len(dims) > 1:
+            mm = np.memmap(bin_path, dtype=dtype, mode='r', offset=seek, shape=tuple(dims))
+            data = np.array(mm[tuple(slice(None, None, stride) for _ in dims)])
+            del mm
+            return data
+
         itemsize = np.dtype(dtype).itemsize
         if dims:
             count = int(np.prod(dims))
@@ -1417,7 +1428,7 @@ def parse_xdmf_metadata(xdmf_path):
 
 
 def load_xdmf_variables(var_metadata, selected_vars, grid_info=None,
-                        average_z=False, average_x=False):
+                        average_z=False, average_x=False, stride=1):
     """
     Load specific variables using pre-parsed XDMF metadata.
 
@@ -1427,6 +1438,9 @@ def load_xdmf_variables(var_metadata, selected_vars, grid_info=None,
         grid_info: grid info dict (for reshaping flat arrays)
         average_z: If True, average over the z direction for 3D arrays.
         average_x: If True, average over the x direction for 3D arrays.
+        stride: subsample every `stride`-th cell along each axis at read
+            time (see _read_binary_from_params) so large domains don't need
+            to be fully loaded just to be decimated afterwards.
 
     Returns:
         dict: {variable_name: numpy_array}. Singleton dimensions are automatically
@@ -1440,7 +1454,7 @@ def load_xdmf_variables(var_metadata, selected_vars, grid_info=None,
             continue
 
         params = var_metadata[name]
-        data = _read_binary_from_params(params)
+        data = _read_binary_from_params(params, stride=stride)
         if data is None:
             continue
 

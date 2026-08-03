@@ -381,14 +381,31 @@ class TurbStatsTab(ttk.Frame):
         chk(s, 'Temperature', bv('temp_on', False))
         chk(s, 'TKE', bv('tke_on', False))
         chk(s, 'Friction coefficient', bv('coeff_friction_on', False))
+        chk(s, 'Vorticity (requires full 3D field)', bv('mean_vorticity_on', False))
+        chk(s, "Vorticity RMS (requires full 3D field)", bv('vorticity_on', False))
+        crow(s, 'Vorticity component', sv('vorticity_component', 'z'), ['x', 'y', 'z'])
+        chk(s, 'Reynolds-stress anisotropy (Lumley triangle)', bv('reynolds_anisotropy_on', False))
+        chk(s, 'Vorticity anisotropy (Lumley triangle, requires full 3D field)', bv('vorticity_anisotropy_on', False))
         chk(s, "u'u' Reynolds stress", bv('u_prime_sq_on', False))
         chk(s, "u'v' Reynolds stress", bv('u_prime_v_prime_on', False))
         chk(s, "v'v' Reynolds stress", bv('v_prime_sq_on', False))
         chk(s, "v'w' Reynolds stress", bv('v_prime_w_prime_on', False))
         chk(s, "w'w' Reynolds stress", bv('w_prime_sq_on', False))
+        chk(s, 'jx current density (mean)', bv('j1_mean_on', False))
+        chk(s, 'jy current density (mean)', bv('j2_mean_on', False))
+        chk(s, 'jz current density (mean)', bv('j3_mean_on', False))
+        chk(s, "jx' RMS (streamwise current density)", bv('j1_rms_on', False))
+        chk(s, "jy' RMS (wall-normal current density)", bv('j2_rms_on', False))
+        chk(s, "jz' RMS (spanwise current density)", bv('j3_rms_on', False))
+        chk(s, 'Lorentz force x (mean)', bv('lorentz_force_x_on', False))
+        chk(s, 'Lorentz force y (mean)', bv('lorentz_force_y_on', False))
+        chk(s, 'Lorentz force z (mean)', bv('lorentz_force_z_on', False))
         chk(s, 'Reynolds Stress Budget terms', bv('re_stress_budget_on', False))
         crow(s, 'Budget component', sv('re_stress_component', 'uu11'),
              ['total', 'uu11', 'uu12', 'uu22', 'uu33'])
+        chk(s, 'Body force analysis', bv('body_force_on', False))
+        crow(s, 'Force component (1=x,2=y,3=z)', sv('body_force_component', '1'),
+             ['1', '2', '3'])
         chk(s, 'Heat transfer coeff.', bv('heat_transf_coeff_on', False))
         chk(s, 'Nusselt number', bv('Nusselt_number_on', False))
         chk(s, 'Turbulent Prandtl number', bv('turb_prandtl_on', False))
@@ -411,6 +428,7 @@ class TurbStatsTab(ttk.Frame):
         # ---- Plotting ----
         s = sec('Plotting')
         chk(s, 'Half channel', bv('half_channel_plot', False))
+        crow(s, 'Half channel side', sv('half_channel_side', 'lower'), ['lower', 'upper'])
         chk(s, 'Linear y scale', bv('linear_y_scale', True))
         chk(s, 'Log x scale (semilog)', bv('log_y_scale', False))
         chk(s, 'Multi-plot', bv('multi_plot', True))
@@ -520,6 +538,15 @@ class TurbStatsTab(ttk.Frame):
             v_prime_sq_on=v['v_prime_sq_on'].get(),
             v_prime_w_prime_on=v['v_prime_w_prime_on'].get(),
             w_prime_sq_on=v['w_prime_sq_on'].get(),
+            j1_mean_on=v['j1_mean_on'].get(),
+            j2_mean_on=v['j2_mean_on'].get(),
+            j3_mean_on=v['j3_mean_on'].get(),
+            j1_rms_on=v['j1_rms_on'].get(),
+            j2_rms_on=v['j2_rms_on'].get(),
+            j3_rms_on=v['j3_rms_on'].get(),
+            lorentz_force_x_on=v['lorentz_force_x_on'].get(),
+            lorentz_force_y_on=v['lorentz_force_y_on'].get(),
+            lorentz_force_z_on=v['lorentz_force_z_on'].get(),
             re_stress_budget_on=v['re_stress_budget_on'].get(),
             re_stress_component=v['re_stress_component'].get(),
             average_z_direction=v['average_z_direction'].get(),
@@ -531,6 +558,7 @@ class TurbStatsTab(ttk.Frame):
             norm_temp_by_ref_temp=v['norm_temp_by_ref_temp'].get(),
             slice_label=v['slice_label'].get(),
             half_channel_plot=v['half_channel_plot'].get(),
+            half_channel_side=v['half_channel_side'].get(),
             linear_y_scale=v['linear_y_scale'].get(),
             log_y_scale=v['log_y_scale'].get(),
             multi_plot=v['multi_plot'].get(),
@@ -543,6 +571,13 @@ class TurbStatsTab(ttk.Frame):
             ux_velocity_log_ref_on=v['ux_velocity_log_ref_on'].get(),
             mhd_NK_ref_on=v['mhd_NK_ref_on'].get(),
             mkm180_ch_ref_on=v['mkm180_ch_ref_on'].get(),
+            body_force_on=v['body_force_on'].get(),
+            body_force_component=v['body_force_component'].get(),
+            mean_vorticity_on=v['mean_vorticity_on'].get(),
+            vorticity_on=v['vorticity_on'].get(),
+            vorticity_component=v['vorticity_component'].get(),
+            reynolds_anisotropy_on=v['reynolds_anisotropy_on'].get(),
+            vorticity_anisotropy_on=v['vorticity_anisotropy_on'].get(),
         )
 
     # ------ Run pipeline -------------------------------------------------------------
@@ -630,6 +665,8 @@ class TurbStatsTab(ttk.Frame):
                 'slice_label': '', 'working_fluid': 'lithium', 'profile_direction': 'y',
                 'slice_coords': '', 'x_crop': '', 'x_profile_y_coords': '',
                 're_stress_component': 'uu11', 'plot_name': '',
+                'body_force_component': '1', 'vorticity_component': 'z',
+                'half_channel_side': 'lower',
             }
             bool_fields = {
                 'thermo_on': False, 'mhd_on': False,
@@ -637,8 +674,13 @@ class TurbStatsTab(ttk.Frame):
                 'average_over_timesteps': False,
                 'ux_velocity_on': True, 'uy_velocity_on': False, 'uz_velocity_on': False,
                 'temp_on': False, 'tke_on': False, 'coeff_friction_on': False,
+                'mean_vorticity_on': False, 'vorticity_on': False,
+                'reynolds_anisotropy_on': False, 'vorticity_anisotropy_on': False,
                 'u_prime_sq_on': False, 'u_prime_v_prime_on': False,
                 'v_prime_sq_on': False, 'v_prime_w_prime_on': False, 'w_prime_sq_on': False,
+                'j1_mean_on': False, 'j2_mean_on': False, 'j3_mean_on': False,
+                'j1_rms_on': False, 'j2_rms_on': False, 'j3_rms_on': False,
+                'lorentz_force_x_on': False, 'lorentz_force_y_on': False, 'lorentz_force_z_on': False,
                 're_stress_budget_on': False, 'heat_transf_coeff_on': False,
                 'Nusselt_number_on': False, 'turb_prandtl_on': False, 'surface_plot_on': False,
                 'norm_by_u_tau_sq': True, 'norm_ux_by_u_tau': True,
@@ -647,6 +689,7 @@ class TurbStatsTab(ttk.Frame):
                 'multi_plot': True, 'save_fig': True, 'save_to_path': True,
                 'large_text_on': False, 'ux_velocity_log_ref_on': True,
                 'mhd_NK_ref_on': False, 'mkm180_ch_ref_on': False,
+                'body_force_on': False,
             }
             for name, default in str_fields.items():
                 if name in v:
@@ -736,6 +779,11 @@ class TurbStatsTab(ttk.Frame):
             f"temp_on = {v['temp_on'].get()}",
             f"tke_on = {v['tke_on'].get()}",
             f"coeff_friction_on = {v['coeff_friction_on'].get()}",
+            f"mean_vorticity_on = {v['mean_vorticity_on'].get()}",
+            f"vorticity_on = {v['vorticity_on'].get()}",
+            f"vorticity_component = '{v['vorticity_component'].get()}'",
+            f"reynolds_anisotropy_on = {v['reynolds_anisotropy_on'].get()}",
+            f"vorticity_anisotropy_on = {v['vorticity_anisotropy_on'].get()}",
             '',
             f"profile_direction = '{v['profile_direction'].get()}'",
             f"slice_coords = '{v['slice_coords'].get()}'",
@@ -749,8 +797,21 @@ class TurbStatsTab(ttk.Frame):
             f"v_prime_w_prime_on = {v['v_prime_w_prime_on'].get()}",
             f"w_prime_sq_on = {v['w_prime_sq_on'].get()}",
             '',
+            f"j1_mean_on = {v['j1_mean_on'].get()}",
+            f"j2_mean_on = {v['j2_mean_on'].get()}",
+            f"j3_mean_on = {v['j3_mean_on'].get()}",
+            f"j1_rms_on = {v['j1_rms_on'].get()}",
+            f"j2_rms_on = {v['j2_rms_on'].get()}",
+            f"j3_rms_on = {v['j3_rms_on'].get()}",
+            f"lorentz_force_x_on = {v['lorentz_force_x_on'].get()}",
+            f"lorentz_force_y_on = {v['lorentz_force_y_on'].get()}",
+            f"lorentz_force_z_on = {v['lorentz_force_z_on'].get()}",
+            '',
             f"re_stress_budget_on = {v['re_stress_budget_on'].get()}",
             f"re_stress_component = '{v['re_stress_component'].get()}'",
+            '',
+            f"body_force_on = {v['body_force_on'].get()}",
+            f"body_force_component = '{v['body_force_component'].get()}'",
             '',
             f"heat_transf_coeff_on = {v['heat_transf_coeff_on'].get()}",
             f"Nusselt_number_on = {v['Nusselt_number_on'].get()}",
@@ -762,6 +823,7 @@ class TurbStatsTab(ttk.Frame):
             f"norm_temp_by_ref_temp = {v['norm_temp_by_ref_temp'].get()}",
             '',
             f"half_channel_plot = {v['half_channel_plot'].get()}",
+            f"half_channel_side = '{v['half_channel_side'].get()}'",
             f"linear_y_scale = {v['linear_y_scale'].get()}",
             f"log_y_scale = {v['log_y_scale'].get()}",
             f"multi_plot = {v['multi_plot'].get()}",
@@ -907,6 +969,30 @@ class SliceTab(ttk.Frame):
         self._xcrop = tk.StringVar()
         row(s, 'x crop:', lambda r: ttk.Entry(r, textvariable=self._xcrop,
             width=14).pack(side='left'))
+        ttk.Label(s, text='(x_min,x_max — xy/xz planes only)', foreground='grey',
+                  font=('TkDefaultFont', 8)).pack(anchor='w')
+
+        # Statistics (fluctuation / vorticity)
+        s = sec('Statistics')
+        self._use_fluc = tk.BooleanVar(value=False)
+        ttk.Checkbutton(s, text="Fluctuation (u' = inst − t_avg)", variable=self._use_fluc,
+                         command=self._on_fluc_toggle).pack(anchor='w')
+
+        r_ta = ttk.Frame(s)
+        r_ta.pack(fill='x', pady=1)
+        ttk.Label(r_ta, text='t_avg file:', width=14, anchor='w').pack(side='left')
+        self._t_avg_path = tk.StringVar()
+        ttk.Entry(r_ta, textvariable=self._t_avg_path, width=16).pack(side='left', fill='x', expand=True)
+        ttk.Button(r_ta, text='...', width=3, command=self._browse_t_avg).pack(side='left')
+
+        self._use_vort = tk.BooleanVar(value=False)
+        r_vort = ttk.Frame(s)
+        r_vort.pack(fill='x', pady=1)
+        ttk.Checkbutton(r_vort, text='Vorticity  (requires qx_ccc, qy_ccc, qz_ccc)',
+                         variable=self._use_vort).pack(side='left')
+        self._vort_component = tk.StringVar(value='z')
+        ttk.Combobox(r_vort, textvariable=self._vort_component, values=['x', 'y', 'z'],
+                     state='readonly', width=4).pack(side='left', padx=4)
 
         # Plot options
         s = sec('Plot Options')
@@ -992,6 +1078,29 @@ class SliceTab(ttk.Frame):
                 return matches[0]
         return path
 
+    def _default_t_avg_path(self):
+        visu = self._visu_folder()
+        ts = self._ts.get()
+        phys = self._phys.get()
+        sl = self._slice_lbl.get().strip()
+        # Mirrors _xdmf_path(): a slice label produces a slice-tagged filename
+        # for both 'inst' and '2d_slice' dtypes.
+        if sl:
+            name = f'domain1_t_avg_{phys}_{sl}_{ts}.xdmf'
+        else:
+            name = f'domain1_t_avg_{phys}_{ts}.xdmf'
+        return os.path.join(visu, name)
+
+    def _on_fluc_toggle(self):
+        if self._use_fluc.get() and not self._t_avg_path.get().strip():
+            self._t_avg_path.set(self._default_t_avg_path())
+
+    def _browse_t_avg(self):
+        path = filedialog.askopenfilename(title='Select t_avg xdmf file',
+                                           filetypes=[('XDMF', '*.xdmf'), ('All files', '*.*')])
+        if path:
+            self._t_avg_path.set(path)
+
     def _scan(self):
         visu = self._visu_folder()
         try:
@@ -1047,17 +1156,41 @@ class SliceTab(ttk.Frame):
 
         def worker():
             try:
-                from utils import parse_xdmf_metadata, load_xdmf_variables
+                from utils import (parse_xdmf_metadata, load_xdmf_variables, slice_axis_info,
+                                    parse_x_crop_input, apply_x_crop)
                 from slice import (extract_slice, plot_slice, plot_combined_slices,
-                                   process_data_arrays, get_slice_location)
+                                   process_data_arrays, get_slice_location, apply_fluctuation,
+                                   apply_vorticity)
+
+                try:
+                    x_crop = parse_x_crop_input(self._xcrop.get())
+                except ValueError as exc:
+                    self._log(f'Invalid x crop ({exc}); ignoring.')
+                    x_crop = None
+
+                use_vort = self._use_vort.get()
+                load_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(sel)) if use_vort else sel
 
                 xdmf = self._xdmf_path()
                 self._log('Loading data…')
                 var_meta, grid = parse_xdmf_metadata(xdmf)
-                data = load_xdmf_variables(var_meta, sel, grid)
+                data = load_xdmf_variables(var_meta, load_vars, grid)
+
+                plot_vars = sel
+                if use_vort:
+                    component = self._vort_component.get()
+                    self._log(f'Computing vorticity (ω_{component})…')
+                    plot_vars = apply_vorticity(data, grid, component)
+                elif self._use_fluc.get():
+                    t_avg_path = self._t_avg_path.get().strip()
+                    if not t_avg_path or not os.path.isfile(t_avg_path):
+                        self._log(f'Warning: t_avg file not found: {t_avg_path}. Skipping fluctuation.')
+                    else:
+                        self._log(f'Computing fluctuation against {t_avg_path}…')
+                        plot_vars = apply_fluctuation(data, sel, grid, t_avg_path)
 
                 interp = self._interp.get()
-                processed, interp_vars = process_data_arrays(data, sel, grid, interp)
+                processed, interp_vars = process_data_arrays(data, plot_vars, grid, interp)
 
                 cmap = self._cmap.get()
                 cscale = self._cscale.get()
@@ -1073,21 +1206,37 @@ class SliceTab(ttk.Frame):
                 is_2d = sample.ndim <= 2
 
                 if is_2d:
-                    coord1 = grid.get('grid_x', np.arange(sample.shape[-1] if sample.ndim > 1 else 1))
-                    coord2 = grid.get('grid_y', np.arange(sample.shape[0]))
-                    axis_labels = ('x', 'y')
+                    axis_info = slice_axis_info(self._slice_lbl.get().strip())
+                    if axis_info:
+                        c1_key, c2_key = axis_info['coord_keys']
+                        axis_labels = axis_info['axis_labels']
+                        crop_plane = axis_info['plane']
+                    else:
+                        c1_key, c2_key = 'grid_x', 'grid_y'
+                        axis_labels = ('x', 'y')
+                        crop_plane = plane
+                    coord1 = grid.get(c1_key, np.arange(sample.shape[-1] if sample.ndim > 1 else 1))
+                    coord2 = grid.get(c2_key, np.arange(sample.shape[0]))
                     slice_info = f'2D data, t={ts}'
-                    slices = [(vn, processed[vn]) for vn in sel if vn in processed]
+                    slices = [(vn, processed[vn]) for vn in plot_vars if vn in processed]
+
+                    if x_crop is not None and crop_plane in ('xy', 'xz'):
+                        cropped_slices = []
+                        for vn, sd in slices:
+                            sd, coord1 = apply_x_crop(sd, coord1, x_crop)
+                            cropped_slices.append((vn, sd))
+                        slices = cropped_slices
                 else:
                     slices = []
                     coord1 = coord2 = axis_labels = None
-                    for vn in sel:
+                    for vn in plot_vars:
                         if vn not in processed:
                             continue
                         sd, c1, c2, al = extract_slice(processed[vn], plane, idx, grid)
+                        if x_crop is not None and plane in ('xy', 'xz'):
+                            sd, c1 = apply_x_crop(sd, c1, x_crop)
                         slices.append((vn, sd))
-                        if coord1 is None:
-                            coord1, coord2, axis_labels = c1, c2, al
+                        coord1, coord2, axis_labels = c1, c2, al
                     loc = get_slice_location(grid, plane, idx)
                     slice_info = (f'{plane}-plane idx={idx} ({loc:.4f}), t={ts}'
                                   if loc is not None else f'{plane}-plane idx={idx}, t={ts}')
@@ -1473,6 +1622,7 @@ class Visu3DPanel(ttk.Frame):
     def render(self, grid, cfg):
         """Replace the current scene.  Must be called from the main (Tk) thread."""
         import pyvista as pv
+        import turb_visu as tv
 
         if self._plotter is not None:
             try:
@@ -1496,13 +1646,14 @@ class Visu3DPanel(ttk.Frame):
                 'y': lambda v: (0, v, 0),
                 'z': lambda v: (0, 0, v),
             }
+            clim = tv._resolve_clim(cfg, grid.cell_data[variable])
             n_added = 0
             for normal in ('x', 'y', 'z'):
                 pos = cfg.get(f'cut_{normal}')
                 if pos is None:
                     continue
                 sl = grid.slice(normal=normal, origin=origins[normal](pos))
-                self._plotter.add_mesh(sl, scalars=variable, cmap=cmap,
+                self._plotter.add_mesh(sl, scalars=variable, cmap=cmap, clim=clim,
                                        show_scalar_bar=(n_added == 0))
                 n_added += 1
             self._plotter.add_axes()
@@ -1514,13 +1665,23 @@ class Visu3DPanel(ttk.Frame):
             grid_pt = grid.cell_data_to_point_data()
             contours = grid_pt.contour(isosurfaces=iso_vals, scalars=variable)
             if contours.n_points > 0:
-                self._plotter.add_mesh(contours, scalars=variable, cmap=cmap,
+                # cell_data_to_point_data/contour carry every point-data
+                # array along, not just the one used for the isovalue — so a
+                # different color_variable (already on grid_pt) just works.
+                color_variable = cfg.get('color_variable') or variable
+                clim = tv._resolve_clim(cfg, grid.cell_data[color_variable])
+                self._plotter.add_mesh(contours, scalars=color_variable, cmap=cmap, clim=clim,
                                        show_scalar_bar=True)
             self._plotter.add_axes()
 
         elif mode == 'volume':
+            if grid.n_cells > tv.VOLUME_CELL_THRESHOLD:
+                print(f"Refusing volume render: {grid.n_cells:,} cells "
+                      f"> {tv.VOLUME_CELL_THRESHOLD:,} limit. Increase the stride.")
+                return
             self._plotter.add_volume(grid, scalars=variable, cmap=cmap,
                                      opacity=cfg.get('opacity', 'sigmoid'),
+                                     clim=tv._resolve_clim(cfg, grid.cell_data[variable]),
                                      show_scalar_bar=True)
             self._plotter.add_axes()
 
@@ -1543,8 +1704,9 @@ class Visu3DPanel(ttk.Frame):
             glyphs = sub.glyph(orient='velocity', scale='velocity_magnitude',
                                factor=cfg.get('glyph_factor', 0.1), geom=geom)
             if glyphs.n_points > 0:
+                clim = tv._resolve_clim(cfg, grid_pt.point_data['velocity_magnitude'])
                 self._plotter.add_mesh(glyphs, scalars='velocity_magnitude',
-                                       cmap=cmap, show_scalar_bar=True)
+                                       cmap=cmap, clim=clim, show_scalar_bar=True)
             self._plotter.add_axes()
 
         elif mode == 'streamlines':
@@ -1576,8 +1738,9 @@ class Visu3DPanel(ttk.Frame):
                     **common,
                 )
             if streamlines.n_points > 0:
+                clim = tv._resolve_clim(cfg, grid_pt.point_data['velocity_magnitude'])
                 self._plotter.add_mesh(streamlines, scalars='velocity_magnitude',
-                                       cmap=cmap, line_width=2, show_scalar_bar=True)
+                                       cmap=cmap, clim=clim, line_width=2, show_scalar_bar=True)
             self._plotter.add_axes()
 
         self._plotter.reset_camera()
@@ -1792,8 +1955,15 @@ class TurbVisuTab(ttk.Frame):
             ('none',        'None'),
             ('fluctuation', "Fluctuation  (u' = u_inst - u_t_avg)"),
             ('q_criterion', 'Q-criterion  (requires qx_ccc, qy_ccc, qz_ccc)'),
+            ('vorticity',   'Vorticity  (requires qx_ccc, qy_ccc, qz_ccc)'),
         ]:
             ttk.Radiobutton(s, text=label, variable=self._stat_mode, value=val).pack(anchor='w', padx=4, pady=1)
+        r_vc = ttk.Frame(s)
+        r_vc.pack(fill='x', padx=4, pady=1)
+        ttk.Label(r_vc, text='Vorticity component:').pack(side='left')
+        self._vort_component = tk.StringVar(value='z')
+        ttk.Combobox(r_vc, textvariable=self._vort_component, values=['x', 'y', 'z'],
+                     state='readonly', width=4).pack(side='left', padx=4)
 
         # ---- Visualisation mode ----
         s = sec('Visualisation')
@@ -1805,6 +1975,17 @@ class TurbVisuTab(ttk.Frame):
         self._cmap = tk.StringVar(value='RdBu_r')
         row(s, 'Colormap:', lambda r: ttk.Combobox(
             r, textvariable=self._cmap, values=COLORMAPS, width=14).pack(side='left'))
+
+        self._vmin = tk.StringVar()
+        self._vmax = tk.StringVar()
+        r_scale = ttk.Frame(s)
+        r_scale.pack(fill='x', pady=1)
+        ttk.Label(r_scale, text='Colour scale:', width=14, anchor='w').pack(side='left')
+        ttk.Entry(r_scale, textvariable=self._vmin, width=8).pack(side='left')
+        ttk.Label(r_scale, text=' / ').pack(side='left')
+        ttk.Entry(r_scale, textvariable=self._vmax, width=8).pack(side='left')
+        ttk.Label(s, text='(vmin / vmax — blank = auto)', foreground='grey',
+                  font=('TkDefaultFont', 8)).pack(anchor='w')
 
         self._stride = tk.IntVar(value=1)
         row(s, 'Stride:', lambda r: ttk.Spinbox(
@@ -1830,6 +2011,19 @@ class TurbVisuTab(ttk.Frame):
         row(s, 'Min:', lambda r: ttk.Entry(r, textvariable=self._iso_min, width=12).pack(side='left'))
         row(s, 'Max:', lambda r: ttk.Entry(r, textvariable=self._iso_max, width=12).pack(side='left'))
         row(s, 'Steps:', lambda r: ttk.Entry(r, textvariable=self._iso_steps, width=6).pack(side='left'))
+
+        self._color_by = tk.StringVar(value='same')
+
+        def _mk_color_by(r):
+            self._color_by_combo = ttk.Combobox(
+                r, textvariable=self._color_by,
+                values=['same', 'q_criterion', 'vorticity'], state='readonly', width=16)
+            self._color_by_combo.pack(side='left')
+        row(s, 'Colour by:', _mk_color_by)
+        self._color_vort_component = tk.StringVar(value='z')
+        row(s, 'Colour vort. comp.:', lambda r: ttk.Combobox(
+            r, textvariable=self._color_vort_component, values=['x', 'y', 'z'],
+            state='readonly', width=4).pack(side='left'))
 
         # ---- Streamlines ----
         s = sec('Streamlines  (requires qx/qy/qz_ccc)')
@@ -1950,6 +2144,7 @@ class TurbVisuTab(ttk.Frame):
             self._var_lb.delete(0, tk.END)
             for n in names:
                 self._var_lb.insert(tk.END, n)
+            self._color_by_combo['values'] = ['same', 'q_criterion', 'vorticity'] + names
             _log_to(self._console, f'Loaded {len(names)} 3D variable(s).')
 
             # Show domain range as hints for slice plane entries
@@ -1974,8 +2169,9 @@ class TurbVisuTab(ttk.Frame):
         stat_mode = self._stat_mode.get()
         use_q    = (stat_mode == 'q_criterion')
         use_fluc = (stat_mode == 'fluctuation')
+        use_vort = (stat_mode == 'vorticity')
         variable = self._selected_var()
-        if not use_q and variable is None:
+        if not use_q and not use_vort and variable is None:
             messagebox.showwarning('No variable', 'Select a variable.')
             return
         if not self._var_meta:
@@ -1986,10 +2182,30 @@ class TurbVisuTab(ttk.Frame):
         cmap   = self._cmap.get()
         stride = max(1, self._stride.get())
 
-        if use_q:
+        if mode == 'volume':
+            import turb_visu as tv
+            predicted = tv.strided_cell_count(self._grid_info, stride)
+            if predicted is not None and predicted > tv.VOLUME_CELL_THRESHOLD:
+                messagebox.showwarning(
+                    'Grid too large',
+                    f'Volume rendering at stride={stride} would need ~{predicted:,} cells '
+                    f'(limit {tv.VOLUME_CELL_THRESHOLD:,}). Increase the stride and try again.',
+                )
+                return
+
+        if use_q or use_vort:
             selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'})
         else:
             selected_vars = [variable]
+
+        # Colour-by (iso-surfaces only): colour the surface by a different
+        # field than the one that defines its geometry.
+        color_by_choice = self._color_by.get()
+        color_by = None if color_by_choice == 'same' else color_by_choice
+        if color_by in ('q_criterion', 'vorticity'):
+            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
+        elif color_by:
+            selected_vars = list({color_by} | set(selected_vars))
 
         def _parse_float(s, fallback):
             try:
@@ -2006,7 +2222,17 @@ class TurbVisuTab(ttk.Frame):
         )
 
         # Common statistics keys added to every cfg
-        stats = {'use_q_criterion': use_q, 'use_fluc': use_fluc, 't_avg_xdmf': t_avg_xdmf}
+        stats = {
+            'use_q_criterion': use_q,
+            'use_fluc': use_fluc,
+            't_avg_xdmf': t_avg_xdmf,
+            'use_vorticity': use_vort,
+            'vorticity_component': self._vort_component.get(),
+            'color_by': color_by,
+            'color_vorticity_component': self._color_vort_component.get(),
+            'vmin': _parse_float(self._vmin.get(), None),
+            'vmax': _parse_float(self._vmax.get(), None),
+        }
 
         if mode == 'slice':
             def _mid(key):
@@ -2093,7 +2319,7 @@ class TurbVisuTab(ttk.Frame):
                 from utils import load_xdmf_variables, parse_xdmf_metadata
 
                 self._log(f'Loading {selected_vars}…')
-                data = load_xdmf_variables(var_meta, selected_vars, grid_info=gi)
+                data = load_xdmf_variables(var_meta, selected_vars, grid_info=gi, stride=stride)
                 if not data:
                     self._log('Error: failed to load data.')
                     return
@@ -2101,18 +2327,81 @@ class TurbVisuTab(ttk.Frame):
                 import operations as op
                 if use_q:
                     self._log('Computing Q-criterion…')
-                    q = op.compute_q_criterion(data, gi)
+                    # Striding node arrays (len ncells+1) and cell arrays (len
+                    # ncells) by the same `stride` can land one cell apart, so
+                    # clip data to the node-derived count — same convention
+                    # build_pyvista_grid uses — before differentiating.
+                    q_grid_info = tv.strided_grid_info(gi, stride)
+                    nz = len(q_grid_info['grid_z']) - 1
+                    ny = len(q_grid_info['grid_y']) - 1
+                    nx = len(q_grid_info['grid_x']) - 1
+                    q_data = {k: v[:nz, :ny, :nx] for k, v in data.items()}
+                    q = op.compute_q_criterion(q_data, q_grid_info)
                     if q is None:
                         return
                     data['Q-criterion'] = q
                     cfg['variable'] = 'Q-criterion'
+                elif use_vort:
+                    component = cfg.get('vorticity_component', 'z')
+                    self._log(f'Computing vorticity (ω_{component})…')
+                    # Same stride-alignment clipping as Q-criterion above.
+                    v_grid_info = tv.strided_grid_info(gi, stride)
+                    nz = len(v_grid_info['grid_z']) - 1
+                    ny = len(v_grid_info['grid_y']) - 1
+                    nx = len(v_grid_info['grid_x']) - 1
+                    v_data = {k: v[:nz, :ny, :nx] for k, v in data.items()}
+                    vorticity = op.compute_vorticity(v_data, v_grid_info, component)
+                    if vorticity is None:
+                        return
+                    vort_name = f'Vorticity_{component}'
+                    data[vort_name] = vorticity
+                    cfg['variable'] = vort_name
                 elif use_fluc:
                     self._log(f"Computing fluctuation {variable}'…")
                     t_avg_meta, _ = parse_xdmf_metadata(cfg['t_avg_xdmf'])
-                    t_avg_data = load_xdmf_variables(t_avg_meta, [variable], grid_info=gi)
+                    t_avg_var = op.INST_TO_TAVG_VAR.get(variable, variable)
+                    t_avg_data = load_xdmf_variables(t_avg_meta, [t_avg_var], grid_info=gi, stride=stride)
                     fluc_name = f"{variable}'"
-                    data[fluc_name] = op.compute_inst_fluc(data[variable], t_avg_data[variable])
+                    data[fluc_name] = op.compute_inst_fluc(data[variable], t_avg_data[t_avg_var])
                     cfg['variable'] = fluc_name
+
+                # Colour-by field (iso-surfaces): a second, independent
+                # scalar used only for colouring the extracted surface, not
+                # for defining its geometry.
+                color_by = cfg.get('color_by')
+                color_field_name = None
+                if color_by == 'q_criterion':
+                    color_field_name = 'Q-criterion'
+                    if color_field_name not in data:
+                        self._log('Computing Q-criterion (colour)…')
+                        c_grid_info = tv.strided_grid_info(gi, stride)
+                        nz = len(c_grid_info['grid_z']) - 1
+                        ny = len(c_grid_info['grid_y']) - 1
+                        nx = len(c_grid_info['grid_x']) - 1
+                        c_data = {k: v[:nz, :ny, :nx] for k, v in data.items()}
+                        q = op.compute_q_criterion(c_data, c_grid_info)
+                        if q is None:
+                            return
+                        data[color_field_name] = q
+                elif color_by == 'vorticity':
+                    color_component = cfg.get('color_vorticity_component', 'z')
+                    color_field_name = f'Vorticity_{color_component}'
+                    if color_field_name not in data:
+                        self._log(f'Computing vorticity (colour, ω_{color_component})…')
+                        c_grid_info = tv.strided_grid_info(gi, stride)
+                        nz = len(c_grid_info['grid_z']) - 1
+                        ny = len(c_grid_info['grid_y']) - 1
+                        nx = len(c_grid_info['grid_x']) - 1
+                        c_data = {k: v[:nz, :ny, :nx] for k, v in data.items()}
+                        vorticity = op.compute_vorticity(c_data, c_grid_info, color_component)
+                        if vorticity is None:
+                            return
+                        data[color_field_name] = vorticity
+                elif color_by:
+                    color_field_name = color_by
+
+                if color_field_name and color_field_name != cfg['variable']:
+                    cfg['color_variable'] = color_field_name
 
                 self._log('Building grid…')
                 grid = tv.build_pyvista_grid(gi, data, stride=stride)
@@ -2120,9 +2409,10 @@ class TurbVisuTab(ttk.Frame):
 
                 if mode == 'iso':
                     import numpy as _np
-                    arr = grid.cell_data[variable]
+                    iso_variable = cfg['variable']
+                    arr = grid.cell_data[iso_variable]
                     vmin, vmax = float(arr.min()), float(arr.max())
-                    self._log(f'  {variable} range: {vmin:.4e} – {vmax:.4e}')
+                    self._log(f'  {iso_variable} range: {vmin:.4e} – {vmax:.4e}')
                     iso_min = cfg['iso_min'] if cfg['iso_min'] is not None else 0.5 * (vmin + vmax)
                     iso_steps = cfg['iso_steps']
                     if iso_steps > 1:

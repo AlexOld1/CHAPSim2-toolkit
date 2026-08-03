@@ -170,6 +170,59 @@ def process_data_arrays(data, selected_vars, grid_info, interpolate_cell_to_poin
     return processed, interpolated_vars
 
 
+def apply_fluctuation(data, variables, grid_info, t_avg_xdmf):
+    """Replace each variable's array in-place with its fluctuation u' = u_inst - u_t_avg.
+
+    Loads the t_avg XDMF file once, looks up each variable's time-averaged
+    counterpart via operations.INST_TO_TAVG_VAR, and adds a "<var>'" entry to
+    `data`. Variables without a known/available t_avg counterpart are left
+    unchanged (with a warning).
+
+    Returns the variable name list to use downstream: fluctuation names
+    ("<var>'") where the subtraction succeeded, original names otherwise.
+    """
+    if not t_avg_xdmf or not os.path.isfile(t_avg_xdmf):
+        print(f"  Warning: t_avg file not found: {t_avg_xdmf}. Skipping fluctuation.")
+        return list(variables)
+
+    t_avg_meta, _ = ut.parse_xdmf_metadata(t_avg_xdmf)
+    result = []
+    for var in variables:
+        t_avg_var = op.INST_TO_TAVG_VAR.get(var)
+        if t_avg_var is None or t_avg_var not in t_avg_meta:
+            print(f"  Warning: no t_avg counterpart for '{var}'; using instantaneous field.")
+            result.append(var)
+            continue
+        t_avg_loaded = ut.load_xdmf_variables(t_avg_meta, [t_avg_var], grid_info=grid_info)
+        fluc_name = f"{var}'"
+        data[fluc_name] = op.compute_inst_fluc(data[var], t_avg_loaded[t_avg_var])
+        result.append(fluc_name)
+    return result
+
+
+def apply_vorticity(data, grid_info, component):
+    """Compute a single vorticity-component field from qx_ccc/qy_ccc/qz_ccc.
+
+    Requires all three instantaneous velocity components to already be
+    loaded in `data`. Adds the derived field to `data` and returns a
+    variable name list containing just that one field, replacing whatever
+    variables were previously selected — same convention build_pyvista_grid
+    /compute_q_criterion callers use in turb_visu.py.
+    """
+    required = ('qx_ccc', 'qy_ccc', 'qz_ccc')
+    if not all(v in data for v in required):
+        print(f"  Warning: vorticity requires {required} to be loaded; skipping.")
+        return list(data.keys())
+
+    vorticity = op.compute_vorticity(data, grid_info, component)
+    if vorticity is None:
+        return list(data.keys())
+
+    vort_name = f'vorticity_{component}'
+    data[vort_name] = vorticity
+    return [vort_name]
+
+
 COLORMAP_OPTIONS = [
     'viridis',
     'plasma',
@@ -249,6 +302,32 @@ def get_slice_location(grid_info, plane, index):
         if index < len(coords):
             return coords[index]
     return index
+
+
+def default_t_avg_path(config):
+    """Guess the path to the matching t_avg XDMF file for the given inst config.
+
+    Follows the same filename convention as get_user_input(): a plain
+    domain1_t_avg_{physics}_{timestep}.xdmf for full 3D data, or
+    domain1_t_avg_{physics}_{slice_label}_{timestep}.xdmf for a 2D slice.
+    Returns None if the required fields are missing or the file doesn't exist.
+    """
+    visu_folder = config.get('visu_folder')
+    physics_type = config.get('physics_type')
+    timestep = config.get('timestep')
+    if not (visu_folder and physics_type and timestep):
+        return None
+
+    if config.get('is_2d_slice'):
+        slice_label = config.get('slice_label')
+        if not slice_label:
+            return None
+        name = f"domain1_t_avg_{physics_type}_{slice_label}_{timestep}.xdmf"
+    else:
+        name = f"domain1_t_avg_{physics_type}_{timestep}.xdmf"
+
+    path = os.path.join(visu_folder, name)
+    return path if os.path.isfile(path) else None
 
 
 def plot_slice(slice_data, coord1, coord2, axis_labels, variable_name,
@@ -693,7 +772,7 @@ def parse_variable_selection(var_choice, variables):
     return selected
 
 
-def get_2d_plot_config(var_metadata, grid_info, slice_label):
+def get_2d_plot_config(var_metadata, grid_info, slice_label, default_t_avg_xdmf=None):
     """Get plot configuration for already-2D slice data."""
 
     # List available variables (2D, or 3D with a singleton dimension)
@@ -726,6 +805,19 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
         selected_vars = [variables[0]]
 
     print(f"\nSelected {len(selected_vars)} variable(s): {selected_vars}")
+
+    # Statistics
+    print("\nStatistics:  1. None   2. Fluctuation (u' = u_inst - u_t_avg)")
+    stat_choice = input("Statistic [1]: ").strip()
+    use_fluc = stat_choice in ('2', 'fluc', 'fluctuation')
+
+    t_avg_xdmf = None
+    if use_fluc:
+        prompt = f"  Path to t_avg xdmf file [{default_t_avg_xdmf}]: " if default_t_avg_xdmf else "  Path to t_avg xdmf file: "
+        t_avg_input = input(prompt).strip()
+        t_avg_xdmf = t_avg_input or default_t_avg_xdmf
+        if not t_avg_xdmf or not os.path.isfile(t_avg_xdmf):
+            print(f"  Warning: t_avg file not found: {t_avg_xdmf}")
 
     # Get slice axis info
     axis_info = ut.slice_axis_info(slice_label)
@@ -818,10 +910,12 @@ def get_2d_plot_config(var_metadata, grid_info, slice_label):
         'shared_scale': shared_scale,
         'x_crop': x_crop,
         'interpolate_cell_to_point': interpolate_cell_to_point,
+        'use_fluc': use_fluc,
+        't_avg_xdmf': t_avg_xdmf,
     }
 
 
-def get_slice_config(var_metadata, grid_info):
+def get_slice_config(var_metadata, grid_info, default_t_avg_xdmf=None):
     """Get slice configuration from user using pre-parsed variable metadata."""
 
     # List available variables (only 3D)
@@ -853,6 +947,26 @@ def get_slice_config(var_metadata, grid_info):
         selected_vars = [variables[0]]
 
     print(f"\nSelected {len(selected_vars)} variable(s): {selected_vars}")
+
+    # Statistics
+    print("\nStatistics:  1. None   2. Fluctuation (u' = u_inst - u_t_avg)   3. Vorticity")
+    stat_choice = input("Statistic [1]: ").strip()
+    use_fluc = stat_choice in ('2', 'fluc', 'fluctuation')
+    use_vort = stat_choice in ('3', 'vort', 'vorticity')
+
+    t_avg_xdmf = None
+    if use_fluc:
+        prompt = f"  Path to t_avg xdmf file [{default_t_avg_xdmf}]: " if default_t_avg_xdmf else "  Path to t_avg xdmf file: "
+        t_avg_input = input(prompt).strip()
+        t_avg_xdmf = t_avg_input or default_t_avg_xdmf
+        if not t_avg_xdmf or not os.path.isfile(t_avg_xdmf):
+            print(f"  Warning: t_avg file not found: {t_avg_xdmf}")
+
+    vorticity_component = 'z'
+    if use_vort:
+        comp = input("  Vorticity component (x/y/z) [z]: ").strip().lower()
+        vorticity_component = comp if comp in ('x', 'y', 'z') else 'z'
+        selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
 
     # Get shape from first variable (all should be same for slicing)
     nz, ny, nx = var_metadata[selected_vars[0]]['shape']
@@ -992,6 +1106,10 @@ def get_slice_config(var_metadata, grid_info):
         'shared_scale': shared_scale,
         'x_crop': x_crop,
         'interpolate_cell_to_point': interpolate_cell_to_point,
+        'use_fluc': use_fluc,
+        't_avg_xdmf': t_avg_xdmf,
+        'use_vort': use_vort,
+        'vorticity_component': vorticity_component,
     }
 
 
@@ -1022,12 +1140,13 @@ def main():
 
     is_2d_slice = config.get('is_2d_slice', False)
     slice_label = config.get('slice_label', None)
+    guessed_t_avg = default_t_avg_path(config)
 
     # Step 2: Get slice/plot configuration
     if is_2d_slice:
-        slice_config = get_2d_plot_config(var_metadata, grid_info, slice_label)
+        slice_config = get_2d_plot_config(var_metadata, grid_info, slice_label, default_t_avg_xdmf=guessed_t_avg)
     else:
-        slice_config = get_slice_config(var_metadata, grid_info)
+        slice_config = get_slice_config(var_metadata, grid_info, default_t_avg_xdmf=guessed_t_avg)
     if slice_config is None:
         return
 
@@ -1045,6 +1164,15 @@ def main():
     if not data:
         print("Error: Failed to load selected variables.")
         return
+
+    if slice_config.get('use_vort'):
+        slice_config['variables'] = apply_vorticity(
+            data, grid_info, slice_config.get('vorticity_component', 'z')
+        )
+    elif slice_config.get('use_fluc'):
+        slice_config['variables'] = apply_fluctuation(
+            data, slice_config['variables'], grid_info, slice_config.get('t_avg_xdmf')
+        )
 
     data, interpolated_vars = process_data_arrays(
         data,
@@ -1229,9 +1357,9 @@ def main():
                 main()
                 return
             if is_2d_slice:
-                slice_config = get_2d_plot_config(var_metadata, grid_info, slice_label)
+                slice_config = get_2d_plot_config(var_metadata, grid_info, slice_label, default_t_avg_xdmf=guessed_t_avg)
             else:
-                slice_config = get_slice_config(var_metadata, grid_info)
+                slice_config = get_slice_config(var_metadata, grid_info, default_t_avg_xdmf=guessed_t_avg)
             if slice_config is None:
                 continue
 
@@ -1244,6 +1372,15 @@ def main():
             if not data:
                 print("Error: Failed to load selected variables.")
                 continue
+
+            if slice_config.get('use_vort'):
+                slice_config['variables'] = apply_vorticity(
+                    data, grid_info, slice_config.get('vorticity_component', 'z')
+                )
+            elif slice_config.get('use_fluc'):
+                slice_config['variables'] = apply_fluctuation(
+                    data, slice_config['variables'], grid_info, slice_config.get('t_avg_xdmf')
+                )
 
             data, interpolated_vars = process_data_arrays(
                 data,

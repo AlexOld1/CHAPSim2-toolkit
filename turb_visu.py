@@ -26,6 +26,11 @@ except ImportError:
 
 LARGE_GRID_THRESHOLD = 10_000_000
 
+# add_volume() must resample onto a dense 3D texture; above this cell count
+# that can exhaust GPU/VRAM or hang the driver (which tends to freeze the
+# whole desktop, not just this process), so volume mode is refused above it.
+VOLUME_CELL_THRESHOLD = 30_000_000
+
 COLORMAPS = ['RdBu_r', 'viridis', 'plasma', 'inferno', 'coolwarm', 'jet']
 
 OPACITY_PRESETS = ['linear', 'sigmoid', 'sigmoid_r', 'geom', 'geom_r']
@@ -47,7 +52,13 @@ def get_available_timesteps(visu_folder):
 
 
 def build_pyvista_grid(grid_info, data_dict, stride=1):
-    """Build a PyVista RectilinearGrid from CHAPSim2 grid coordinates and data."""
+    """Build a PyVista RectilinearGrid from CHAPSim2 grid coordinates and data.
+
+    `data_dict` arrays are expected to already be subsampled by `stride`
+    (via load_xdmf_variables(..., stride=stride)) so large domains never
+    need to be fully loaded into RAM just to build a decimated grid — only
+    the (cheap) coordinate arrays are strided here to match.
+    """
     x = grid_info['grid_x'][::stride]
     y = grid_info['grid_y'][::stride]
     z = grid_info['grid_z'][::stride]
@@ -58,13 +69,41 @@ def build_pyvista_grid(grid_info, data_dict, stride=1):
     grid = pv.RectilinearGrid(x, y, z)
 
     for name, arr in data_dict.items():
-        sampled = arr[::stride, ::stride, ::stride]
-        # Clip to match grid cell count (off-by-one can arise at non-divisible strides)
-        sampled = sampled[:nz, :ny, :nx]
+        # Clip to match grid cell count (off-by-one can arise between the
+        # coordinate stride here and the data's own pre-strided shape).
+        sampled = arr[:nz, :ny, :nx]
         # CHAPSim2 arrays are (nz, ny, nx); C-order flatten matches VTK's x-fastest ordering
         grid.cell_data[name] = sampled.flatten()
 
     return grid
+
+
+def strided_grid_info(grid_info, stride):
+    """Return grid_info with coordinate arrays subsampled by `stride`.
+
+    Use this to get coordinates consistent with data that was already
+    loaded pre-strided (e.g. before calling compute_q_criterion, which
+    needs grid_x/y/z the same length as the velocity arrays it differentiates).
+    """
+    if stride <= 1:
+        return grid_info
+    return {
+        **grid_info,
+        'grid_x': grid_info['grid_x'][::stride],
+        'grid_y': grid_info['grid_y'][::stride],
+        'grid_z': grid_info['grid_z'][::stride],
+    }
+
+
+def strided_cell_count(grid_info, stride):
+    """Predicted PyVista grid cell count after subsampling coordinates by `stride`."""
+    counts = []
+    for key in ('grid_x', 'grid_y', 'grid_z'):
+        arr = grid_info.get(key)
+        if arr is None:
+            return None
+        counts.append(max(0, len(arr[::stride]) - 1))
+    return int(np.prod(counts))
 
 # ---------------------------------------------------------------------------
 # User interaction helpers
@@ -178,10 +217,11 @@ def get_visualization_config(var_metadata, grid_info):
     selected_vars = [variable]
 
     # ---- Statistics (ordered by complexity) ----
-    print("\nStatistics:  1. None   2. Fluctuation (u' = u_inst − u_t_avg)   3. Q-criterion")
+    print("\nStatistics:  1. None   2. Fluctuation (u' = u_inst − u_t_avg)   3. Q-criterion   4. Vorticity")
     stat_choice = input("Statistic [1]: ").strip()
     use_fluc = stat_choice in ('2', 'fluc', 'fluctuation')
     use_q    = stat_choice in ('3', 'q', 'q-criterion', 'qcriterion')
+    use_vort = stat_choice in ('4', 'vort', 'vorticity')
 
     t_avg_xdmf = None
     if use_fluc:
@@ -192,7 +232,45 @@ def get_visualization_config(var_metadata, grid_info):
     if use_q:
         selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
 
+    vorticity_component = 'z'
+    if use_vort:
+        comp = input("  Vorticity component (x/y/z) [z]: ").strip().lower()
+        vorticity_component = comp if comp in ('x', 'y', 'z') else 'z'
+        selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
+
+    # ---- Colour-by (iso-surfaces only): colour the surface by a different
+    # field than the one that defines its geometry, e.g. fluctuation
+    # isosurfaces coloured by vorticity, or Q-criterion coloured by velocity.
+    color_by = None
+    color_vorticity_component = 'z'
+    if mode == 'iso':
+        print("\nColour iso-surfaces by a different variable? (leave blank to use the same field)")
+        print("  Options: a variable name, 'q' (Q-criterion), 'vort' (Vorticity)")
+        color_choice = input("Colour by [same]: ").strip().lower()
+        if color_choice in ('q', 'q-criterion', 'qcriterion'):
+            color_by = 'q_criterion'
+            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
+        elif color_choice in ('vort', 'vorticity'):
+            color_by = 'vorticity'
+            comp = input("  Colour vorticity component (x/y/z) [z]: ").strip().lower()
+            color_vorticity_component = comp if comp in ('x', 'y', 'z') else 'z'
+            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
+        elif color_choice and color_choice in variables:
+            color_by = color_choice
+            selected_vars = list({color_choice} | set(selected_vars))
+        elif color_choice:
+            print(f"  Warning: '{color_choice}' not recognised; colouring by the iso-surface field instead.")
+
     cmap = choose_colormap('viridis' if mode in ('iso', 'streamlines') else 'RdBu_r')
+
+    # Custom colour scale — leave either bound blank to auto-scale that side
+    # from the rendered field's own min/max (same as before).
+    vmin = vmax = None
+    if input("Custom colour scale? (y/n) [n]: ").strip().lower() == 'y':
+        raw_vmin = input("  vmin [auto]: ").strip()
+        raw_vmax = input("  vmax [auto]: ").strip()
+        vmin = float(raw_vmin) if raw_vmin else None
+        vmax = float(raw_vmax) if raw_vmax else None
 
     if mode in ('streamlines', 'glyphs'):
         selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
@@ -204,7 +282,13 @@ def get_visualization_config(var_metadata, grid_info):
         'use_q_criterion': use_q,
         'use_fluc': use_fluc,
         't_avg_xdmf': t_avg_xdmf,
+        'use_vorticity': use_vort,
+        'vorticity_component': vorticity_component,
+        'color_by': color_by,
+        'color_vorticity_component': color_vorticity_component,
         'cmap': cmap,
+        'vmin': vmin,
+        'vmax': vmax,
     }
 
     if mode == 'slice':
@@ -272,6 +356,21 @@ def get_visualization_config(var_metadata, grid_info):
 # Rendering
 # ---------------------------------------------------------------------------
 
+def _resolve_clim(cfg, arr):
+    """Colour-scale (vmin, vmax) for add_mesh/add_volume's `clim`.
+
+    Returns None (PyVista auto-scales per mesh, the previous behaviour)
+    unless a custom scale was requested; a bound left blank falls back to
+    `arr`'s own min/max.
+    """
+    vmin, vmax = cfg.get('vmin'), cfg.get('vmax')
+    if vmin is None and vmax is None:
+        return None
+    lo = vmin if vmin is not None else float(arr.min())
+    hi = vmax if vmax is not None else float(arr.max())
+    return (lo, hi)
+
+
 def render_scene(grid, cfg):
     """Build and display the PyVista interactive scene."""
     variable = cfg['variable']
@@ -289,12 +388,13 @@ def render_scene(grid, cfg):
             ('z', cfg.get('cut_z')),
         ]
         origins = {'x': lambda v: (v, 0, 0), 'y': lambda v: (0, v, 0), 'z': lambda v: (0, 0, v)}
+        clim = _resolve_clim(cfg, grid.cell_data[variable])
         n_added = 0
         for normal, pos in planes:
             if pos is None:
                 continue
             sl = grid.slice(normal=normal, origin=origins[normal](pos))
-            plotter.add_mesh(sl, scalars=variable, cmap=cmap, show_scalar_bar=(n_added == 0))
+            plotter.add_mesh(sl, scalars=variable, cmap=cmap, clim=clim, show_scalar_bar=(n_added == 0))
             n_added += 1
 
         if n_added == 0:
@@ -327,13 +427,25 @@ def render_scene(grid, cfg):
         if contours.n_points == 0:
             print(f"  Warning: iso-surface(s) are empty.")
         else:
-            plotter.add_mesh(contours, scalars=variable, cmap=cmap, show_scalar_bar=True)
+            # cell_data_to_point_data/contour carry every point-data array
+            # along, not just the one used for the isovalue — so a different
+            # colour_variable (already present on grid_pt) just works here.
+            color_variable = cfg.get('color_variable') or variable
+            if color_variable != variable:
+                print(f"  Colouring iso-surface(s) by {color_variable}...")
+            clim = _resolve_clim(cfg, grid.cell_data[color_variable])
+            plotter.add_mesh(contours, scalars=color_variable, cmap=cmap, clim=clim, show_scalar_bar=True)
 
         plotter.add_axes()
 
     elif mode == 'volume':
+        if grid.n_cells > VOLUME_CELL_THRESHOLD:
+            print(f"  Error: grid too large for volume rendering ({grid.n_cells:,} "
+                  f"cells > {VOLUME_CELL_THRESHOLD:,} limit). Increase the stride and try again.")
+            return
         plotter.add_volume(grid, scalars=variable, cmap=cmap,
                            opacity=cfg.get('opacity', 'sigmoid'),
+                           clim=_resolve_clim(cfg, grid.cell_data[variable]),
                            show_scalar_bar=True)
         plotter.add_axes()
 
@@ -374,8 +486,9 @@ def render_scene(grid, cfg):
         if streamlines.n_points == 0:
             print("  Warning: no streamlines generated — try adjusting the seed centre or radius.")
         else:
+            clim = _resolve_clim(cfg, grid_pt.point_data['velocity_magnitude'])
             plotter.add_mesh(streamlines, scalars='velocity_magnitude',
-                             cmap=cmap, line_width=2, show_scalar_bar=True)
+                             cmap=cmap, clim=clim, line_width=2, show_scalar_bar=True)
         plotter.add_axes()
 
     elif mode == 'glyphs':
@@ -410,8 +523,9 @@ def render_scene(grid, cfg):
         if glyphs.n_points == 0:
             print("  Warning: no glyphs generated.")
         else:
+            clim = _resolve_clim(cfg, vel_mag)
             plotter.add_mesh(glyphs, scalars='velocity_magnitude',
-                             cmap=cmap, show_scalar_bar=True)
+                             cmap=cmap, clim=clim, show_scalar_bar=True)
         plotter.add_axes()
 
     if cfg.get('screenshot_path'):
@@ -454,34 +568,89 @@ def main():
         if stride > 1:
             print(f"  Using stride {stride}.")
 
+    if vis_cfg['mode'] == 'volume':
+        predicted = strided_cell_count(grid_info, stride)
+        if predicted is not None and predicted > VOLUME_CELL_THRESHOLD:
+            print(f"\nError: volume rendering at stride={stride} would need "
+                  f"~{predicted:,} cells (limit {VOLUME_CELL_THRESHOLD:,}).")
+            print("Increase the stride and try again.")
+            return
+
     print(f"\nLoading {len(vis_cfg['selected_vars'])} variable(s)...")
-    data = ut.load_xdmf_variables(var_metadata, vis_cfg['selected_vars'], grid_info=grid_info)
+    data = ut.load_xdmf_variables(var_metadata, vis_cfg['selected_vars'], grid_info=grid_info, stride=stride)
     if not data:
         print("Error: Failed to load data.")
         return
 
     use_q    = vis_cfg['use_q_criterion']
     use_fluc = vis_cfg['use_fluc']
+    use_vort = vis_cfg.get('use_vorticity', False)
     t_avg_xdmf = vis_cfg.get('t_avg_xdmf')
     variable = vis_cfg['variable']
+    color_by = vis_cfg.get('color_by')
+    color_vorticity_component = vis_cfg.get('color_vorticity_component', 'z')
 
     t_avg_data = {}
     if use_fluc and t_avg_xdmf:
         print(f"Loading t_avg data from {t_avg_xdmf}...")
         t_avg_meta, _ = ut.parse_xdmf_metadata(t_avg_xdmf)
-        t_avg_load_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'}) if use_q else [variable]
-        t_avg_data = ut.load_xdmf_variables(t_avg_meta, t_avg_load_vars, grid_info=grid_info)
+        t_avg_var = op.INST_TO_TAVG_VAR.get(variable, variable)
+        t_avg_data = ut.load_xdmf_variables(t_avg_meta, [t_avg_var], grid_info=grid_info, stride=stride)
+
+    if use_q or use_vort or color_by in ('q_criterion', 'vorticity'):
+        # Striding node arrays (len ncells+1) and cell arrays (len ncells) by
+        # the same `stride` can land one cell apart (e.g. 1001 nodes -> 334
+        # strided nodes -> 333 cells, vs 1000 cells -> 334 strided cells
+        # directly) — clip to the node-derived count so coordinates and data
+        # line up, same convention build_pyvista_grid uses.
+        deriv_grid_info = strided_grid_info(grid_info, stride)
+        nz = len(deriv_grid_info['grid_z']) - 1
+        ny = len(deriv_grid_info['grid_y']) - 1
+        nx = len(deriv_grid_info['grid_x']) - 1
+        deriv_data = {k: v[:nz, :ny, :nx] for k, v in data.items()}
 
     if use_q:
-        q = op.compute_q_criterion(data, grid_info)
+        q = op.compute_q_criterion(deriv_data, deriv_grid_info)
         if q is None:
             return
         data['Q-criterion'] = q
         vis_cfg['variable'] = 'Q-criterion'
+    elif use_vort:
+        component = vis_cfg.get('vorticity_component', 'z')
+        vorticity = op.compute_vorticity(deriv_data, deriv_grid_info, component)
+        if vorticity is None:
+            return
+        vort_name = f'Vorticity_{component}'
+        data[vort_name] = vorticity
+        vis_cfg['variable'] = vort_name
     elif use_fluc and t_avg_data:
+        t_avg_var = op.INST_TO_TAVG_VAR.get(variable, variable)
         fluc_name = f"{variable}'"
-        data[fluc_name] = op.compute_inst_fluc(data[variable], t_avg_data[variable])
+        data[fluc_name] = op.compute_inst_fluc(data[variable], t_avg_data[t_avg_var])
         vis_cfg['variable'] = fluc_name
+
+    # Colour-by field (iso-surfaces): a second, independent scalar used only
+    # for colouring the extracted surface, not for defining its geometry.
+    color_field_name = None
+    if color_by == 'q_criterion':
+        color_field_name = 'Q-criterion'
+        if color_field_name not in data:
+            q = op.compute_q_criterion(deriv_data, deriv_grid_info)
+            if q is None:
+                return
+            data[color_field_name] = q
+    elif color_by == 'vorticity':
+        color_field_name = f'Vorticity_{color_vorticity_component}'
+        if color_field_name not in data:
+            vorticity = op.compute_vorticity(deriv_data, deriv_grid_info, color_vorticity_component)
+            if vorticity is None:
+                return
+            data[color_field_name] = vorticity
+    elif color_by:
+        color_field_name = color_by
+
+    if color_field_name and color_field_name != vis_cfg['variable']:
+        vis_cfg['color_variable'] = color_field_name
 
     print("Building PyVista grid...")
     grid = build_pyvista_grid(grid_info, data, stride=stride)

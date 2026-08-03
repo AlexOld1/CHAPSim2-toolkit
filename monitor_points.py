@@ -454,4 +454,3 @@ if plt_bulk:
 print('='*100)
 print(f'All plots saved to: {path}')
 print('='*100)
-a

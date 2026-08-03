@@ -181,7 +181,13 @@ def interpolate_cell_to_point_data(data):
         raise ValueError(f"Unsupported number of dimensions: {ndim}")
 
 def second_derivative(f, y, axis=0):
-    """Second derivative on a non-uniform y mesh. Operates along *axis* (default 0)."""
+    """Second derivative on a non-uniform y mesh. Operates along *axis* (default 0).
+
+    Boundary cells extend the same non-uniform 3-point stencil using the
+    wall value from interpolate_wall_point (linear extrapolation from the
+    two nearest cells) as the missing third point, instead of assuming
+    zero curvature gradient at the wall.
+    """
     d2f = np.empty_like(f)
     h = np.diff(y)
     h1 = h[:-1]  # left spacing
@@ -205,10 +211,45 @@ def second_derivative(f, y, axis=0):
              + f[_sl(slice(None, -2))] * h2b)
         / (h1b * h2b * (h1b + h2b))
     )
-    # Boundaries: copy neighbour
-    d2f[_sl(slice(0, 1))] = d2f[_sl(slice(1, 2))]
-    d2f[_sl(slice(-1, None))] = d2f[_sl(slice(-2, -1))]
+
+    # Boundaries: interpolate_wall_point assumes the wall-normal direction
+    # is axis 0, so bring the requested axis to the front for that call only.
+    f_axis0 = np.moveaxis(f, axis, 0)
+    f_wall_lo = np.expand_dims(interpolate_wall_point(f_axis0, y_coords=y, wall='lower'), axis)
+    f_wall_hi = np.expand_dims(interpolate_wall_point(f_axis0, y_coords=y, wall='upper'), axis)
+
+    y_wall_lo = y[0] - 0.5 * (y[1] - y[0])
+    y_wall_hi = y[-1] + 0.5 * (y[-1] - y[-2])
+
+    hL1, hL2 = y[0] - y_wall_lo, y[1] - y[0]
+    hU1, hU2 = y[-1] - y[-2], y_wall_hi - y[-1]
+
+    d2f[_sl(slice(0, 1))] = (
+        2 * (f[_sl(slice(1, 2))] * hL1
+             - f[_sl(slice(0, 1))] * (hL1 + hL2)
+             + f_wall_lo * hL2)
+        / (hL1 * hL2 * (hL1 + hL2))
+    )
+    d2f[_sl(slice(-1, None))] = (
+        2 * (f_wall_hi * hU1
+             - f[_sl(slice(-1, None))] * (hU1 + hU2)
+             + f[_sl(slice(-2, -1))] * hU2)
+        / (hU1 * hU2 * (hU1 + hU2))
+    )
     return d2f
+
+INST_TO_TAVG_VAR = {
+    'qx_ccc':   't_avg_u1',
+    'qy_ccc':   't_avg_u2',
+    'qz_ccc':   't_avg_u3',
+    'pressure': 't_avg_pr',
+    'pr':       't_avg_pr',
+    'Temperature': 't_avg_T',
+    'electric_potential': 't_avg_e',
+    'jx_current': 't_avg_j1',
+    'jy_current': 't_avg_j2',
+    'jz_current': 't_avg_j3',
+}
 
 def compute_inst_fluc(inst_field, t_avg_field):
     return inst_field - t_avg_field
@@ -807,11 +848,12 @@ def compute_pressure_transport(tke_comp_dict, uiuj='total', u_ref=1): # think th
     """Pressure transport: -(∂⟨p'u'_j⟩/∂x_i + ∂⟨p'u'_i⟩/∂x_j)"""
     P = tke_comp_dict['press_velocity_fluc_grad_tensor']
     f = tke_comp_dict['f']
+    G_CONST = 9.81
     if uiuj == 'total':
-        return {'pressure_transport': -np.trace(P) * u_ref if f is None else -u_ref * np.trace(P) / f}
+        return {'pressure_transport': -np.trace(P) if f is None else -np.trace(P) / (f)}
     else:
         i, j = _parse_component(uiuj)
-        return {'pressure_transport': -(P[i, j] + P[j, i]) * u_ref if f is None else -u_ref * (P[i, j] + P[j, i]) / f}
+        return {'pressure_transport': -(P[i, j] + P[j, i]) if f is None else -(P[i, j] + P[j, i]) / (f) }
 
 def compute_pressure_strain(tke_comp_dict, uiuj='total', u_ref=1):
     """
@@ -823,13 +865,14 @@ def compute_pressure_strain(tke_comp_dict, uiuj='total', u_ref=1):
     """ 
     f = tke_comp_dict['f']
     S = tke_comp_dict['pressure_strain_tensor']
+    G_CONST = 9.81
     if uiuj == 'total':
         result = np.einsum('ii...->...', S)
-        return {'pressure_strain': result * u_ref if f is None else u_ref * result / f}
+        return {'pressure_strain': result if f is None else result / (f)}
     else:
         i, j = _parse_component(uiuj)
         result = S[i, j] + S[j, i]
-        return {'pressure_strain': result * u_ref if f is None else u_ref * result / f}
+        return  {'pressure_strain': result if f is None else result / (f)}
 
 # def compute_pressure_work(tke_comp_dict, uiuj='total'):
 #     """
@@ -996,57 +1039,158 @@ def analytical_laminar_mhd_prof(case, Re_bulk, Re_tau):
 # Body Force Analysis
 # =====================================================================================================================================================
 
-# def compute_force_components(xdmf_data_dict, y_coords):
-  
-#     def get_var(name):
-#         return xdmf_data_dict.get(name, None)
+def compute_force_components(xdmf_data_dict, y_coords, average_z=False, average_x=False):
+    """
+    Gather the mean-field quantities needed for mean-momentum body-force
+    analysis (pressure, buoyancy, Lorentz) from XDMF data.
 
-    
-#     return{
-#         lorentz_x: get_var()
-#     }
-def compute_buoyancy():
-    return
+    Naming convention: 1,2,3 are x,y,z, matching compute_budget_components.
+    Unlike the Reynolds-stress budget terms (compute_buoyancy_term,
+    compute_mhd_term), these forces act on the *mean* momentum equation, so
+    they only need mean fields (pressure, density, current density) rather
+    than fluctuation correlations.
 
-def compute_viscosity():
-    return
+    Args:
+        xdmf_data_dict: Dictionary containing XDMF data (prefix-stripped names)
+        y_coords: 1D array of y cell-centre coordinates
+        average_z: True if z has been averaged out (data is 2D or 1D)
+        average_x: True if x has been averaged out (data is 1D)
 
-def compute_dens_variation():
-    return
+    Returns:
+        dict with the raw mean fields ('pr', 'f', 'j') and the mean
+        pressure gradient vector ('pr_grad', a length-3 list of d<p>/dx_i)
+    """
 
-def compute_inertia_uniform():
-    return
+    def get_var(name):
+        return xdmf_data_dict.get(name, None)
 
-def compute_inertia_non_uniform():
-    return
+    # Gradient helpers — axis mapping depends on data dimensionality
+    # (mirrors compute_budget_components):
+    # 3D (nz,ny,nx): x=axis2, y=axis1, z=axis0
+    # 2D (ny,nx):    x=axis1, y=axis0, z=n/a
+    # 1D (ny,):      x=n/a,   y=axis0, z=n/a
+    def grad_x(field):
+        if field is None:
+            return None
+        if average_x:
+            return np.zeros_like(field)
+        if average_z:  # 2D (ny, nx)
+            return np.gradient(field, axis=1)
+        return np.gradient(field, axis=2)  # 3D (nz, ny, nx)
 
-def compute_total_non_uniform():
-    """total non-uniform = bouyancy + viscosity + density + inertia_non_uniform"""
-    return
+    def grad_y(field):
+        if field is None:
+            return None
+        if field.ndim == 1:
+            return np.gradient(field, y_coords)
+        if average_z:  # 2D (ny, nx)
+            return np.gradient(field, y_coords, axis=0)
+        return np.gradient(field, y_coords, axis=1)  # 3D (nz, ny, nx)
 
-# def compute_lorentz_force(mag_field_direction, stuart_number, force_dict):
-#     """
-#     M_ij = N * (ε_jlm B_m <u'_i j'_l> + ε_ilm B_m <u'_j j'_l>)
-#     where ε is the levi civita tensor.
-#     """
-#     N = stuart_number
-#     B = np.array(mag_field_direction)
-#     J = force_dict{j_tensor}
+    def grad_z(field):
+        if field is None:
+            return None
+        if average_z:
+            return np.zeros_like(field)
+        return np.gradient(field, axis=0)  # 3D (nz, ny, nx)
 
-#     eijk = np.zeros((3, 3, 3))
-#     eijk[0, 1, 2] = eijk[1, 2, 0] = eijk[2, 0, 1] = 1.0
-#     eijk[2, 1, 0] = eijk[0, 2, 1] = eijk[1, 0, 2] = -1.0
+    pr = get_var('pr')
+    dens = get_var('f')
+    j_fields = [get_var('j1'), get_var('j2'), get_var('j3')]
 
-#     # C[a, l] = ε_alm B_m
-#     C = np.einsum('alm,m->al', eijk, B)  # (3, 3)
+    grad_fns = [grad_x, grad_y, grad_z]
+    pr_grad = [grad_fns[k](pr) for k in range(3)]
 
-#     term1 = np.einsum('l,l...->...', C[jj], J[ii])
-#     term2 = np.einsum('l,l...->...', C[ii], J[jj])
+    return {
+        'pr': pr,
+        'pr_grad': pr_grad,
+        'f': dens,
+        'j': j_fields,
+    }
 
-#     return {f'lorentz': N * (term1 + term2)}
+
+def compute_buoyancy(gravity_direction, u_ref, l_ref, force_dict):
+    """
+    Mean buoyancy body force acting on the mean momentum equation:
+
+    F_i = (1/Fr^2) * g_i * <f>
+
+    """
+    G_CONST = 9.81
+    g = np.array(gravity_direction)
+    dens = force_dict['f']
+
+    if dens is None:
+        return {f'buoyancy_{i}': None for i in (1, 2, 3)}
+
+    Fr = (float(u_ref) / np.sqrt(G_CONST * float(l_ref))
+          if (u_ref is not None and l_ref is not None) else 1 / np.sqrt(G_CONST))
+    Fr_sq_inv = 1.0 / Fr ** 2
+
+    return {f'buoyancy_{i}': Fr_sq_inv * g[i - 1] * dens for i in (1, 2, 3)}
 
 
+def compute_pressure(force_dict):
+    """
+    Mean pressure-gradient body force acting on the mean momentum equation:
 
+    F_i = -d<p>/dx_i
+    """
+    pr_grad = force_dict['pr_grad']
+    return {
+        f'pressure_{i}': (-pr_grad[i - 1] if pr_grad[i - 1] is not None else None)
+        for i in (1, 2, 3)
+    }
+
+
+def compute_lorentz_force(mag_field_direction, stuart_number, force_dict):
+    """
+    Mean Lorentz body force acting on the mean momentum equation:
+
+    F = N * (J x B),  F_i = N * ε_ilm <J_l> B_m
+    where ε is the Levi-Civita tensor, <J> is the mean current density
+    vector, and B is the (constant, imposed) magnetic field direction.
+
+    """
+    N = stuart_number
+    B = np.array(mag_field_direction)
+    j_fields = force_dict['j']  # [j1, j2, j3], mean current density
+
+    ref = next((j for j in j_fields if j is not None), None)
+    if N == 0.0 or ref is None:
+        return {f'lorentz_{i}': None for i in (1, 2, 3)}
+
+    zeros = np.zeros_like(ref)
+    J = np.array([j if j is not None else zeros for j in j_fields])  # (3, ...)
+
+    eijk = np.zeros((3, 3, 3))
+    eijk[0, 1, 2] = eijk[1, 2, 0] = eijk[2, 0, 1] = 1.0
+    eijk[2, 1, 0] = eijk[0, 2, 1] = eijk[1, 0, 2] = -1.0
+
+    # C[i, l] = ε_ilm B_m
+    C = np.einsum('ilm,m->il', eijk, B)  # (3, 3)
+
+    # F_i = N * ε_ilm J_l B_m = N * C[i,l] J_l
+    F = N * np.einsum('il,l...->i...', C, J)  # (3, ...)
+
+    return {f'lorentz_{i + 1}': F[i] for i in range(3)}
+
+
+# def compute_viscosity():
+#     return
+
+# def compute_dens_variation():
+#     return
+
+# def compute_inertia_uniform():
+#     return
+
+# def compute_inertia_non_uniform():
+#     return
+
+# def compute_total_non_uniform():
+#     """total non-uniform = bouyancy + viscosity + density + inertia_non_uniform"""
+#     return
 
 # =====================================================================================================================================================
 # Two-point Correlation Analysis
@@ -1061,7 +1205,7 @@ def compute_total_non_uniform():
 # =====================================================================================================================================================
 
 # =====================================================================================================================================================
-# Coherent Structures/ Vortex Analysis
+# Q-Criterion
 # =====================================================================================================================================================
 
 def compute_q_criterion(data_dict, grid_info):
@@ -1100,19 +1244,180 @@ def compute_q_criterion(data_dict, grid_info):
 # Vorticity functions
 # =====================================================================================================================================================
 
-def compute_vorticity_omega_x(uy, uz, y, z):
-    duzdy = np.gradient(uz, y)
-    duydz = np.gradient(uy, z)
-    return duzdy - duydz
 
-def compute_vorticity_omega_y(ux, uz, x, z):
-    duxdz = np.gradient(ux, z)
-    duzdx = np.gradient(uz, x)
-    return duzdx - duxdz
+def compute_vorticity(data_dict, grid_info, component):
 
-def compute_vorticity_omega_z(uy, ux, x, y):
-    duydx = np.gradient(uy, x)
-    duxdy = np.gradient(ux, y)
-    return duydx - duxdy
+    for req in ('qx_ccc', 'qy_ccc', 'qz_ccc'):
+        if req not in data_dict:
+            print(f"  Cannot compute vorticity: '{req}' not loaded.")
+            return None
+
+    x_cell = 0.5 * (grid_info['grid_x'][:-1] + grid_info['grid_x'][1:])
+    y_cell = 0.5 * (grid_info['grid_y'][:-1] + grid_info['grid_y'][1:])
+    z_cell = 0.5 * (grid_info['grid_z'][:-1] + grid_info['grid_z'][1:])
+
+    print("  Computing velocity gradients (this may take a moment)...")
+    u, v, w = data_dict['qx_ccc'], data_dict['qy_ccc'], data_dict['qz_ccc']
+
+    # np.gradient returns [d/dz, d/dy, d/dx] for shape (nz, ny, nx)
+    du_dz, du_dy, _ = np.gradient(u, z_cell, y_cell, x_cell)
+    dv_dz, _, dv_dx = np.gradient(v, z_cell, y_cell, x_cell)
+    _, dw_dy, dw_dx = np.gradient(w, z_cell, y_cell, x_cell)
+
+    if component == 'x':
+        vorticity = dw_dy - dv_dz
+    elif component == 'y':
+        vorticity = dw_dx - du_dz
+    elif component == 'z':
+        vorticity = dv_dx - du_dy
+    else:
+        raise ValueError(f"Unknown component '{component}', expected 'x', 'y', or 'z'")
+
+    return vorticity
+
+
+def compute_vorticity_fluctuation_rms(data_dict, grid_info, component):
+    """RMS turbulent vorticity fluctuation, from time-averaged data only.
+
+    Uses the same Var(X) = <X^2> - <X>^2 identity as compute_normal_stress
+    (uu - u**2), applied through the curl operator (compute_vorticity): the
+    mean vorticity is curl(u1, u2, u3), and <omega^2> is the same curl
+    formula applied to the diagonal Reynolds-stress components
+    (uu11, uu22, uu33) in place of (u1, u2, u3):
+
+        omega'_rms = sqrt( curl(uu)_component - curl(u_mean)_component**2 )
+
+    Requires u1, u2, u3, uu11, uu22, uu33 in data_dict as full, unaveraged
+    (nz, ny, nx) fields (not pre-reduced over z/x) — same requirement as
+    compute_vorticity.
+    """
+    for req in ('u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'):
+        if req not in data_dict:
+            print(f"  Cannot compute vorticity fluctuation: '{req}' not loaded.")
+            return None
+
+    mean_vort = compute_vorticity(
+        {'qx_ccc': data_dict['u1'], 'qy_ccc': data_dict['u2'], 'qz_ccc': data_dict['u3']},
+        grid_info, component,
+    )
+    uu_curl = compute_vorticity(
+        {'qx_ccc': data_dict['uu11'], 'qy_ccc': data_dict['uu22'], 'qz_ccc': data_dict['uu33']},
+        grid_info, component,
+    )
+    if mean_vort is None or uu_curl is None:
+        return None
+
+    variance = uu_curl - np.square(mean_vort)
+    return np.sqrt(np.clip(variance, 0, None))
+
+# =====================================================================================================================================================
+# Anisotropy Analysis
+# =====================================================================================================================================================
+
+def construct_reynolds_stress_anisotropy_tensor(data_dict):
+    """
+    Construct the Reynolds-stress anisotropy tensor b_ij:
+
+        R_ij = <u_i' u_j'> = uu_ij - u_i * u_j     (Reynolds stress tensor)
+        k    = 0.5 * (R_11 + R_22 + R_33)          (turbulent kinetic energy)
+        b_ij = R_ij / (2k) - delta_ij / 3
+
+    Args:
+        data_dict: dict containing mean velocities u1, u2, u3 and Reynolds
+                   stress correlations uu11, uu12, uu13, uu22, uu23, uu33
+                   (same naming convention as compute_budget_components)
+
+    Returns:
+        (3, 3, ...) array b_ij, or None if a required quantity is missing.
+    """
+    u = [data_dict.get('u1'), data_dict.get('u2'), data_dict.get('u3')]
+    uu_names = {(0, 0): 'uu11', (0, 1): 'uu12', (0, 2): 'uu13',
+                (1, 1): 'uu22', (1, 2): 'uu23', (2, 2): 'uu33'}
+
+    R = {}
+    for (i, j), name in uu_names.items():
+        uu_ij = data_dict.get(name)
+        if uu_ij is None or u[i] is None or u[j] is None:
+            print(f"  Cannot compute Reynolds stress anisotropy tensor: '{name}' or mean velocity not loaded.")
+            return None
+        R[i, j] = R[j, i] = uu_ij - u[i] * u[j]
+
+    k = 0.5 * (R[0, 0] + R[1, 1] + R[2, 2])
+
+    delta = np.eye(3)
+    b = np.array([
+        [R[i, j] / (2.0 * k) - delta[i, j] / 3.0 for j in range(3)]
+        for i in range(3)
+    ])
+    return b
+
+def construct_vorticity_anisotropy_tensor(data_dict, grid_info):
+    """
+    Construct the vorticity anisotropy tensor d_ij, the vorticity analog of
+    construct_reynolds_stress_anisotropy_tensor:
+
+        Omega_ii = <omega_i'^2>                           (diagonal only, see note)
+        omega_k  = 0.5 * (Omega_11 + Omega_22 + Omega_33)
+        d_ij     = Omega_ij / (2*omega_k) - delta_ij / 3
+
+    Note: only the diagonal <omega_i'^2> terms are computable from the
+    available time-averaged data, via compute_vorticity_fluctuation_rms's
+    curl(uu) - curl(u_mean)**2 identity. Off-diagonal <omega_i'omega_j'>
+    cross-correlations aren't derivable from u_mean/uu_ij alone, so they
+    are set to zero here.
+
+    Args:
+        data_dict: dict containing mean velocities u1, u2, u3 and Reynolds
+                   stress correlations uu11, uu22, uu33
+        grid_info: grid coordinate info, needed by compute_vorticity
+
+    Returns:
+        (3, 3, ...) array d_ij, or None if a required quantity is missing.
+    """
+    omega_sq = {}
+    for i, component in enumerate(('x', 'y', 'z')):
+        rms = compute_vorticity_fluctuation_rms(data_dict, grid_info, component)
+        if rms is None:
+            return None
+        omega_sq[i] = np.square(rms)
+
+    omega_k = 0.5 * (omega_sq[0] + omega_sq[1] + omega_sq[2])
+
+    delta = np.eye(3)
+    zero = np.zeros_like(omega_k)
+    d = np.array([
+        [(omega_sq[i] if i == j else zero) / (2.0 * omega_k) - delta[i, j] / 3.0
+         for j in range(3)]
+        for i in range(3)
+    ])
+    return d
+
+def second_invariant(tensor):
+    """
+    Second invariant of a 3x3 tensor field: I2 = 0.5 * [(tr T)^2 - tr(T^2)].
+    For a traceless tensor (e.g. an anisotropy tensor b_ij or d_ij), this
+    reduces to -0.5 * tr(T^2).
+
+    Args:
+        tensor: (3, 3, ...) array, leading two axes are the tensor indices
+
+    Returns:
+        array of shape tensor.shape[2:]
+    """
+    trace = np.trace(tensor, axis1=0, axis2=1)
+    trace_sq = np.einsum('ij...,ji...->...', tensor, tensor)
+    return 0.5 * (trace ** 2 - trace_sq)
+
+def third_invariant(tensor):
+    """
+    Third invariant of a 3x3 tensor field: I3 = det(T).
+
+    Args:
+        tensor: (3, 3, ...) array, leading two axes are the tensor indices
+
+    Returns:
+        array of shape tensor.shape[2:]
+    """
+    return np.linalg.det(np.moveaxis(tensor, (0, 1), (-2, -1)))
 
 # =====================================================================================================================================================

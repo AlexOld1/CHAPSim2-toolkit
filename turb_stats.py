@@ -97,6 +97,39 @@ class Config:
     mkm180_ch_ref_on: bool
     xdmf_data_type: str = 'tsp_avg'
 
+    body_force_on: bool = False
+    body_force_component: str = '1'
+
+    # Vorticity profiles — see MeanVorticity / VorticityFluctuationRMS.
+    mean_vorticity_on: bool = False
+    vorticity_on: bool = False
+    vorticity_component: str = 'z'
+
+    # Anisotropy-tensor invariants, plotted as Lumley triangles — see
+    # AnisotropyComputer.
+    reynolds_anisotropy_on: bool = False
+    vorticity_anisotropy_on: bool = False
+
+    # Which wall half_channel_plot shows: 'lower' -> y in [-1, 0] (near the
+    # y=-1 wall), 'upper' -> y in [0, 1] (near the y=+1 wall).
+    half_channel_side: str = 'lower'
+
+    # Mean electric current density profiles — see MeanCurrentDensityj1/j2/j3.
+    j1_mean_on: bool = False
+    j2_mean_on: bool = False
+    j3_mean_on: bool = False
+
+    # RMS electric current density fluctuation profiles — see
+    # CurrentDensityRMSj1/j2/j3.
+    j1_rms_on: bool = False
+    j2_rms_on: bool = False
+    j3_rms_on: bool = False
+
+    # Mean Lorentz body-force profiles — see MeanLorentzForcex/y/z.
+    lorentz_force_x_on: bool = False
+    lorentz_force_y_on: bool = False
+    lorentz_force_z_on: bool = False
+
     @classmethod
     def from_module(cls, config_module):
         """Create Config from imported config module"""
@@ -159,6 +192,23 @@ class Config:
             mhd_NK_ref_on=getattr(config_module, 'mhd_NK_ref_on', False),
             mkm180_ch_ref_on=getattr(config_module, 'mkm180_ch_ref_on', False),
             xdmf_data_type=getattr(config_module, 'xdmf_data_type', 'tsp_avg'),
+            body_force_on=getattr(config_module, 'body_force_on', False),
+            body_force_component=getattr(config_module, 'body_force_component', '1'),
+            mean_vorticity_on=getattr(config_module, 'mean_vorticity_on', False),
+            vorticity_on=getattr(config_module, 'vorticity_on', False),
+            vorticity_component=getattr(config_module, 'vorticity_component', 'z'),
+            reynolds_anisotropy_on=getattr(config_module, 'reynolds_anisotropy_on', False),
+            vorticity_anisotropy_on=getattr(config_module, 'vorticity_anisotropy_on', False),
+            half_channel_side=getattr(config_module, 'half_channel_side', 'lower'),
+            j1_mean_on=getattr(config_module, 'j1_mean_on', False),
+            j2_mean_on=getattr(config_module, 'j2_mean_on', False),
+            j3_mean_on=getattr(config_module, 'j3_mean_on', False),
+            j1_rms_on=getattr(config_module, 'j1_rms_on', False),
+            j2_rms_on=getattr(config_module, 'j2_rms_on', False),
+            j3_rms_on=getattr(config_module, 'j3_rms_on', False),
+            lorentz_force_x_on=getattr(config_module, 'lorentz_force_x_on', False),
+            lorentz_force_y_on=getattr(config_module, 'lorentz_force_y_on', False),
+            lorentz_force_z_on=getattr(config_module, 'lorentz_force_z_on', False),
         )
 
 @dataclass
@@ -247,6 +297,9 @@ class PlotConfig:
                 'mhd': '#8c564b',
                 'pressure_strain': '#bcbd22',
                 'turbulent_convection': '#7f7f7f',
+                'pressure_force': '#9467bd',
+                'buoyancy_force': '#e377c2',
+                'lorentz_force': '#8c564b',
             }
 
         if self.visible_palette is None:
@@ -279,6 +332,10 @@ class PlotConfig:
                 "turbulent_diffusion": "Turbulent Diffusion",
                 "buoyancy": "Buoyancy",
                 "mhd": "MHD (Lorentz)",
+                # Body force terms
+                "pressure_force": "Pressure Force",
+                "buoyancy_force": "Buoyancy Force",
+                "lorentz_force": "Lorentz Force",
             }
 
     @property
@@ -311,18 +368,20 @@ def create_data_loader(config: Config, data_types: List[str] = None):
         required_vars = _build_required_xdmf_vars(config)
         re_stress_enabled = (config.u_prime_sq_on or config.u_prime_v_prime_on or
                              config.v_prime_sq_on or config.v_prime_w_prime_on or
-                             config.w_prime_sq_on or config.tke_on)
+                             config.w_prime_sq_on or config.tke_on or config.vorticity_on or
+                             config.reynolds_anisotropy_on or config.vorticity_anisotropy_on or
+                             config.j1_rms_on or config.j2_rms_on or config.j3_rms_on)
         re_stress_budget_enabled = config.re_stress_budget_on
 
         # Build data_types from what is actually enabled so we don't try
         # to read files that may not exist.
-        
+
         if data_types is None:
             data_types = [config.xdmf_data_type]
         else:
             data_types = list(data_types)
 
-        if re_stress_enabled or re_stress_budget_enabled:
+        if re_stress_enabled or re_stress_budget_enabled or config.body_force_on:
             if not any(dtype == 't_avg' or dtype == ('tsp_avg') for dtype in data_types):
                 data_types.append('t_avg')
                 print("Added 't_avg' to data_types because enabled stats require time-averaged fields.")
@@ -392,6 +451,38 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
         required.update({'T', 'fuh1', 'fu1'})
     if config.turb_prandtl_on:
         required.update({'u1', 'u2', 'uu12', 'T', 'Tu2'})
+
+    if config.body_force_on:
+        required.add('pr')
+        if config.thermo_on:
+            required.add('f')
+        if config.mhd_on:
+            required.update({'j1', 'j2', 'j3'})
+
+    if config.mean_vorticity_on:
+        required.update({'u1', 'u2', 'u3'})
+    if config.vorticity_on:
+        required.update({'u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'})
+    if config.reynolds_anisotropy_on:
+        required.update({'u1', 'u2', 'u3', 'uu11', 'uu12', 'uu13', 'uu22', 'uu23', 'uu33'})
+    if config.vorticity_anisotropy_on:
+        required.update({'u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'})
+
+    if config.j1_mean_on:
+        required.add('j1')
+    if config.j2_mean_on:
+        required.add('j2')
+    if config.j3_mean_on:
+        required.add('j3')
+    if config.j1_rms_on:
+        required.update({'j1', 'jj11'})
+    if config.j2_rms_on:
+        required.update({'j2', 'jj22'})
+    if config.j3_rms_on:
+        required.update({'j3', 'jj33'})
+
+    if config.lorentz_force_x_on or config.lorentz_force_y_on or config.lorentz_force_z_on:
+        required.update({'j1', 'j2', 'j3'})
 
     # Ensure downstream normalization/flow-info/coordinate logic can run.
     if required:
@@ -866,7 +957,244 @@ class TurbulentKineticEnergy(Profiles):
         v_prime_sq = op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
         w_prime_sq = op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
         return op.compute_tke(u_prime_sq, v_prime_sq, w_prime_sq)
-    
+
+
+class MeanVorticity(Profiles):
+    """Mean vorticity profile: curl of the time-averaged velocity field
+    (u1, u2, u3), via op.compute_vorticity.
+
+    compute_vorticity needs the full, unaveraged (nz, ny, nx) field to
+    differentiate — so unlike the other Profiles stats, this requires
+    average_z_direction and average_x_direction both off.
+    """
+
+    def __init__(self, component: str, average_z: bool, average_x: bool):
+        super().__init__('vorticity_mean', f"Vorticity ($\\omega_{component}$)", ['u1', 'u2', 'u3'])
+        self.component = component
+        self.average_z = average_z
+        self.average_x = average_x
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        if self.average_z or self.average_x:
+            print("Vorticity requires 'Average z direction' and 'Average x direction' "
+                  "to both be off (it needs the full 3D field to differentiate); skipping.")
+            return False
+
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        grid_info = getattr(data_loader, 'grid_info', None)
+        result = self.compute(data_dict, grid_info)
+        if result is None:
+            return False
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray], grid_info: Optional[Dict] = None) -> Optional[np.ndarray]:
+        return op.compute_vorticity(
+            {'qx_ccc': data_dict['u1'], 'qy_ccc': data_dict['u2'], 'qz_ccc': data_dict['u3']},
+            grid_info, self.component,
+        )
+
+
+class VorticityFluctuationRMS(Profiles):
+    """RMS turbulent vorticity fluctuation profile.
+
+    Uses the same Var(X) = <X^2> - <X>^2 identity as compute_normal_stress,
+    applied through the curl operator: the mean vorticity comes from the
+    curl of the mean velocity (u1, u2, u3), and <omega^2> comes from the
+    same curl formula applied to the diagonal Reynolds-stress components
+    (uu11, uu22, uu33) in place of (u1, u2, u3) — see
+    op.compute_vorticity_fluctuation_rms. Same full-3D requirement as
+    MeanVorticity (compute_vorticity needs unaveraged data).
+    """
+
+    def __init__(self, component: str, average_z: bool, average_x: bool):
+        super().__init__(
+            'vorticity_rms', f"Vorticity RMS ($\\omega_{component}'$)",
+            ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'],
+        )
+        self.component = component
+        self.average_z = average_z
+        self.average_x = average_x
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        if self.average_z or self.average_x:
+            print("Vorticity RMS requires 'Average z direction' and 'Average x direction' "
+                  "to both be off (it needs the full 3D field to differentiate); skipping.")
+            return False
+
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        grid_info = getattr(data_loader, 'grid_info', None)
+        result = self.compute(data_dict, grid_info)
+        if result is None:
+            return False
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray], grid_info: Optional[Dict] = None) -> Optional[np.ndarray]:
+        return op.compute_vorticity_fluctuation_rms(data_dict, grid_info, self.component)
+
+# =====================================================================================================================================================
+# MHD PROFILE CLASSES
+# =====================================================================================================================================================
+
+class MeanCurrentDensityj1(Profiles):
+    """Mean streamwise electric current density profile (j1)"""
+
+    def __init__(self):
+        super().__init__('j1_mean', '$j_x$', ['j1'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.read_profile(data_dict['j1'])
+
+
+class MeanCurrentDensityj2(Profiles):
+    """Mean wall-normal electric current density profile (j2)"""
+
+    def __init__(self):
+        super().__init__('j2_mean', '$j_y$', ['j2'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.read_profile(data_dict['j2'])
+
+
+class MeanCurrentDensityj3(Profiles):
+    """Mean spanwise electric current density profile (j3)"""
+
+    def __init__(self):
+        super().__init__('j3_mean', '$j_z$', ['j3'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.read_profile(data_dict['j3'])
+
+
+class CurrentDensityRMSj1(Profiles):
+    """RMS streamwise electric current density fluctuation sqrt(<j1'j1'>)."""
+
+    def __init__(self):
+        super().__init__('j1_rms', "$j_x'_{rms}$", ['j1', 'jj11'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return np.sqrt(np.clip(op.compute_normal_stress(data_dict['j1'], data_dict['jj11']), 0, None))
+
+
+class CurrentDensityRMSj2(Profiles):
+    """RMS wall-normal electric current density fluctuation sqrt(<j2'j2'>)."""
+
+    def __init__(self):
+        super().__init__('j2_rms', "$j_y'_{rms}$", ['j2', 'jj22'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return np.sqrt(np.clip(op.compute_normal_stress(data_dict['j2'], data_dict['jj22']), 0, None))
+
+
+class CurrentDensityRMSj3(Profiles):
+    """RMS spanwise electric current density fluctuation sqrt(<j3'j3'>)."""
+
+    def __init__(self):
+        super().__init__('j3_rms', "$j_z'_{rms}$", ['j3', 'jj33'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return np.sqrt(np.clip(op.compute_normal_stress(data_dict['j3'], data_dict['jj33']), 0, None))
+
+
+class MeanLorentzForcex(Profiles):
+    """Mean Lorentz body force, x-component: F_x = N*(J x B)_x."""
+
+    def __init__(self, mag_field_direction: List[float], stuart_number: float):
+        super().__init__('lorentz_force_x', 'Lorentz Force ($F_x$)', ['j1', 'j2', 'j3'])
+        self.mag_field_direction = mag_field_direction
+        self.stuart_number = stuart_number
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        result = self.compute(data_dict)
+        if result is None:
+            print(f"Could not compute {self.name} for {case}, {timestep} (stuart_number=0?).")
+            return False
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+        force_dict = {'j': [data_dict['j1'], data_dict['j2'], data_dict['j3']]}
+        result = op.compute_lorentz_force(self.mag_field_direction, self.stuart_number, force_dict)
+        return result['lorentz_1']
+
+
+class MeanLorentzForcey(Profiles):
+    """Mean Lorentz body force, y-component: F_y = N*(J x B)_y."""
+
+    def __init__(self, mag_field_direction: List[float], stuart_number: float):
+        super().__init__('lorentz_force_y', 'Lorentz Force ($F_y$)', ['j1', 'j2', 'j3'])
+        self.mag_field_direction = mag_field_direction
+        self.stuart_number = stuart_number
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        result = self.compute(data_dict)
+        if result is None:
+            print(f"Could not compute {self.name} for {case}, {timestep} (stuart_number=0?).")
+            return False
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+        force_dict = {'j': [data_dict['j1'], data_dict['j2'], data_dict['j3']]}
+        result = op.compute_lorentz_force(self.mag_field_direction, self.stuart_number, force_dict)
+        return result['lorentz_2']
+
+
+class MeanLorentzForcez(Profiles):
+    """Mean Lorentz body force, z-component: F_z = N*(J x B)_z."""
+
+    def __init__(self, mag_field_direction: List[float], stuart_number: float):
+        super().__init__('lorentz_force_z', 'Lorentz Force ($F_z$)', ['j1', 'j2', 'j3'])
+        self.mag_field_direction = mag_field_direction
+        self.stuart_number = stuart_number
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        data_dict = {}
+        for quantity in self.required_quantities:
+            if not data_loader.has(case, quantity, timestep):
+                print(f"Missing {quantity} data for {self.name} calculation: {case}, {timestep}")
+                return False
+            data_dict[quantity] = data_loader.get(case, quantity, timestep)
+
+        result = self.compute(data_dict)
+        if result is None:
+            print(f"Could not compute {self.name} for {case}, {timestep} (stuart_number=0?).")
+            return False
+        self.raw_results[(case, timestep)] = result
+        return True
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> Optional[np.ndarray]:
+        force_dict = {'j': [data_dict['j1'], data_dict['j2'], data_dict['j3']]}
+        result = op.compute_lorentz_force(self.mag_field_direction, self.stuart_number, force_dict)
+        return result['lorentz_3']
+
 # =====================================================================================================================================================
 # THERMO PROFILE CLASSES
 # =====================================================================================================================================================
@@ -1289,6 +1617,219 @@ class BudgetTerm:
         return values[:(len(values)//2)]
 
 
+# =====================================================================================================================================================
+# BODY FORCE ANALYSIS CLASSES
+# =====================================================================================================================================================
+
+class ForceComputer:
+    """
+    Computes all enabled body-force terms by calling op.compute_force_components
+    once and then extracting individual terms via op.compute_pressure /
+    op.compute_buoyancy / op.compute_lorentz_force.
+
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.component = config.body_force_component
+        self.average_z = config.average_z_direction
+        self.average_x = config.average_x_direction
+
+        # Pressure is always available; buoyancy needs thermo data, Lorentz
+        # needs MHD data — gated the same way BudgetComputer gates its own
+        # buoyancy/mhd terms on config.thermo_on / config.mhd_on.
+        self.enabled_terms = []
+        if config.body_force_on:
+            self.enabled_terms.append(('body_force_on', 'pressure_force', 'Pressure Force'))
+            if config.thermo_on:
+                self.enabled_terms.append(('thermo_on', 'buoyancy_force', 'Buoyancy Force'))
+            if config.mhd_on:
+                self.enabled_terms.append(('mhd_on', 'lorentz_force', 'Lorentz Force'))
+
+        # Storage: {term_name: {(case, timestep): array}}
+        self.raw_results: Dict[str, Dict[Tuple[str, str], np.ndarray]] = {
+            t[1]: {} for t in self.enabled_terms
+        }
+        self.processed_results: Dict[str, Dict[Tuple[str, str], np.ndarray]] = {
+            t[1]: {} for t in self.enabled_terms
+        }
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        """Compute all enabled body-force terms for one case/timestep."""
+        raw_dict = data_loader.get_raw_dict(case, timestep)
+        if raw_dict is None:
+            print(f"No data for body force analysis: {case}, {timestep}")
+            return False
+
+        y_coords = getattr(data_loader, 'y_coords', None)
+        if y_coords is None:
+            print(f"No y_coords for body force analysis: {case}, {timestep}")
+            return False
+
+        force_comp = op.compute_force_components(
+            raw_dict, y_coords,
+            average_z=self.average_z, average_x=self.average_x
+        )
+
+        u_ref = float(op.get_ref_Re(case, self.config.cases, self.config.ref_bulk_velocity))
+        l_ref = float(op.get_ref_Re(case, self.config.cases, self.config.ref_length))
+
+        component_key = f'_{self.component}'
+        _compute_fns = {
+            'pressure_force': lambda d: op.compute_pressure(d),
+            'buoyancy_force': lambda d: op.compute_buoyancy(
+                self.config.gravity_direction, u_ref, l_ref, d),
+            'lorentz_force': lambda d: op.compute_lorentz_force(
+                self.config.mag_field_direction, self.config.stuart_number, d),
+        }
+        result_prefix = {
+            'pressure_force': 'pressure',
+            'buoyancy_force': 'buoyancy',
+            'lorentz_force': 'lorentz',
+        }
+
+        for _flag, term_name, _label in self.enabled_terms:
+            result = _compute_fns[term_name](force_comp)
+            value = result.get(f'{result_prefix[term_name]}{component_key}')
+            if value is None:
+                print(f"  Warning: could not compute {term_name} ({self.component}) for {case}, {timestep}")
+                continue
+            self.raw_results[term_name][(case, timestep)] = value
+
+        return True
+
+
+class ForceTerm:
+    """
+    Thin wrapper around a single body-force term so it looks like a stat
+    object to the pipeline and plotter.
+    """
+
+    def __init__(self, term_name: str, label: str, computer: ForceComputer):
+        self.name = term_name
+        self.label = label
+        self._computer = computer
+
+    @property
+    def raw_results(self):
+        return self._computer.raw_results[self.name]
+
+    @property
+    def processed_results(self):
+        return self._computer.processed_results[self.name]
+
+    @processed_results.setter
+    def processed_results(self, value):
+        self._computer.processed_results[self.name] = value
+
+    def get_half_domain(self, values: np.ndarray) -> np.ndarray:
+        return values[:(len(values)//2)]
+
+
+# =====================================================================================================================================================
+# ANISOTROPY ANALYSIS CLASSES
+# =====================================================================================================================================================
+
+class AnisotropyComputer:
+    """
+    Computes Reynolds-stress and/or vorticity anisotropy-tensor invariants
+    (II, III) for Lumley-triangle plotting. Each tensor is built once per
+    case/timestep and split into its two invariants — same batched pattern
+    as BudgetComputer/ForceComputer, since op.second_invariant/
+    op.third_invariant would otherwise redo the (expensive, for vorticity)
+    tensor construction twice per case/timestep.
+
+    Reynolds-stress anisotropy works on the native dimensionality of the
+    loaded data (no gradients involved). Vorticity anisotropy goes through
+    op.compute_vorticity internally, so — like MeanVorticity/
+    VorticityFluctuationRMS — it needs the full, unaveraged 3D field.
+    """
+
+    def __init__(self, config: Config):
+        self.config = config
+        self.average_z = config.average_z_direction
+        self.average_x = config.average_x_direction
+
+        self.enabled_terms = []
+        if config.reynolds_anisotropy_on:
+            self.enabled_terms += [
+                ('reynolds_anisotropy_on', 'reynolds_ii', '$II$ (Reynolds stress)'),
+                ('reynolds_anisotropy_on', 'reynolds_iii', '$III$ (Reynolds stress)'),
+            ]
+        if config.vorticity_anisotropy_on:
+            self.enabled_terms += [
+                ('vorticity_anisotropy_on', 'vorticity_ii', '$II$ (vorticity)'),
+                ('vorticity_anisotropy_on', 'vorticity_iii', '$III$ (vorticity)'),
+            ]
+
+        self.raw_results: Dict[str, Dict[Tuple[str, str], np.ndarray]] = {
+            t[1]: {} for t in self.enabled_terms
+        }
+        self.processed_results: Dict[str, Dict[Tuple[str, str], np.ndarray]] = {
+            t[1]: {} for t in self.enabled_terms
+        }
+
+    def compute_for_case(self, case: str, timestep: str, data_loader) -> bool:
+        """Compute all enabled anisotropy invariants for one case/timestep."""
+        raw_dict = data_loader.get_raw_dict(case, timestep)
+        if raw_dict is None:
+            print(f"No data for anisotropy analysis: {case}, {timestep}")
+            return False
+
+        ok = True
+
+        if self.config.reynolds_anisotropy_on:
+            b = op.construct_reynolds_stress_anisotropy_tensor(raw_dict)
+            if b is None:
+                ok = False
+            else:
+                self.raw_results['reynolds_ii'][(case, timestep)] = op.second_invariant(b)
+                self.raw_results['reynolds_iii'][(case, timestep)] = op.third_invariant(b)
+
+        if self.config.vorticity_anisotropy_on:
+            if self.average_z or self.average_x:
+                print("Vorticity anisotropy requires 'Average z direction' and 'Average x "
+                      "direction' to both be off (it needs the full 3D field to "
+                      "differentiate); skipping.")
+                ok = False
+            else:
+                grid_info = getattr(data_loader, 'grid_info', None)
+                d = op.construct_vorticity_anisotropy_tensor(raw_dict, grid_info)
+                if d is None:
+                    ok = False
+                else:
+                    self.raw_results['vorticity_ii'][(case, timestep)] = op.second_invariant(d)
+                    self.raw_results['vorticity_iii'][(case, timestep)] = op.third_invariant(d)
+
+        return ok
+
+
+class AnisotropyTerm:
+    """
+    Thin wrapper around a single anisotropy invariant so it looks like a
+    stat object to the pipeline and plotter.
+    """
+
+    def __init__(self, term_name: str, label: str, computer: AnisotropyComputer):
+        self.name = term_name
+        self.label = label
+        self._computer = computer
+
+    @property
+    def raw_results(self):
+        return self._computer.raw_results[self.name]
+
+    @property
+    def processed_results(self):
+        return self._computer.processed_results[self.name]
+
+    @processed_results.setter
+    def processed_results(self, value):
+        self._computer.processed_results[self.name] = value
+
+    def get_half_domain(self, values: np.ndarray) -> np.ndarray:
+        return values[:(len(values)//2)]
+
 
 # =====================================================================================================================================================
 # PIPELINE CLASS
@@ -1358,6 +1899,41 @@ class TurbulenceStatsPipeline:
         if self.config.coeff_friction_on:
             self.statistics.append(FrictionCoefficient(self.config.cases, self.config.Re))
 
+        if self.config.mean_vorticity_on:
+            self.statistics.append(MeanVorticity(
+                self.config.vorticity_component,
+                self.config.average_z_direction,
+                self.config.average_x_direction,
+            ))
+
+        if self.config.vorticity_on:
+            self.statistics.append(VorticityFluctuationRMS(
+                self.config.vorticity_component,
+                self.config.average_z_direction,
+                self.config.average_x_direction,
+            ))
+
+        if self.config.j1_mean_on:
+            self.statistics.append(MeanCurrentDensityj1())
+        if self.config.j2_mean_on:
+            self.statistics.append(MeanCurrentDensityj2())
+        if self.config.j3_mean_on:
+            self.statistics.append(MeanCurrentDensityj3())
+
+        if self.config.j1_rms_on:
+            self.statistics.append(CurrentDensityRMSj1())
+        if self.config.j2_rms_on:
+            self.statistics.append(CurrentDensityRMSj2())
+        if self.config.j3_rms_on:
+            self.statistics.append(CurrentDensityRMSj3())
+
+        if self.config.lorentz_force_x_on:
+            self.statistics.append(MeanLorentzForcex(self.config.mag_field_direction, self.config.stuart_number))
+        if self.config.lorentz_force_y_on:
+            self.statistics.append(MeanLorentzForcey(self.config.mag_field_direction, self.config.stuart_number))
+        if self.config.lorentz_force_z_on:
+            self.statistics.append(MeanLorentzForcez(self.config.mag_field_direction, self.config.stuart_number))
+
         re_stress_budget_enabled = self.config.re_stress_budget_on
 
         self.budget_computer = None
@@ -1366,18 +1942,36 @@ class TurbulenceStatsPipeline:
             for _flag, term_name, label in self.budget_computer.enabled_terms:
                 self.statistics.append(BudgetTerm(term_name, label, self.budget_computer))
 
+        self.force_computer = None
+        if self.config.body_force_on:
+            self.force_computer = ForceComputer(self.config)
+            for _flag, term_name, label in self.force_computer.enabled_terms:
+                self.statistics.append(ForceTerm(term_name, label, self.force_computer))
+
+        self.anisotropy_computer = None
+        if self.config.reynolds_anisotropy_on or self.config.vorticity_anisotropy_on:
+            self.anisotropy_computer = AnisotropyComputer(self.config)
+            for _flag, term_name, label in self.anisotropy_computer.enabled_terms:
+                self.statistics.append(AnisotropyTerm(term_name, label, self.anisotropy_computer))
+
     def compute_all(self) -> None:
         """Compute all registered statistics for all cases and timesteps"""
         # Use the loader's timestep list — it may have been updated (e.g. to ['avg'])
         # by load_all() when average_over_timesteps is enabled.
         timesteps = self.data_loader.timesteps
 
-        # Separate regular stats from budget terms
-        regular_stats = [s for s in self.statistics if not isinstance(s, BudgetTerm)]
+        # Separate regular stats from budget/force/anisotropy terms (each of
+        # those is computed in one batched call per case/timestep, covering
+        # all its terms, rather than per-stat).
+        regular_stats = [s for s in self.statistics if not isinstance(s, (BudgetTerm, ForceTerm, AnisotropyTerm))]
         n_budget = len(self.budget_computer.enabled_terms) if self.budget_computer else 0
+        n_force = len(self.force_computer.enabled_terms) if self.force_computer else 0
+        n_anisotropy = len(self.anisotropy_computer.enabled_terms) if self.anisotropy_computer else 0
         total_tasks = len(regular_stats) * len(self.config.cases) * len(timesteps)
-        # Budget: one compute call per case/timestep (covers all terms)
+        # Budget/force/anisotropy: one compute call per case/timestep (covers all terms)
         total_tasks += len(self.config.cases) * len(timesteps) if n_budget else 0
+        total_tasks += len(self.config.cases) * len(timesteps) if n_force else 0
+        total_tasks += len(self.config.cases) * len(timesteps) if n_anisotropy else 0
 
         with tqdm(total=total_tasks, desc="Computing statistics", unit="stat") as pbar:
             # Regular stats
@@ -1392,6 +1986,20 @@ class TurbulenceStatsPipeline:
                 for case in self.config.cases:
                     for timestep in timesteps:
                         self.budget_computer.compute_for_case(case, timestep, self.data_loader)
+                        pbar.update(1)
+
+            # Body force analysis: one call per case/timestep computes all terms
+            if self.force_computer:
+                for case in self.config.cases:
+                    for timestep in timesteps:
+                        self.force_computer.compute_for_case(case, timestep, self.data_loader)
+                        pbar.update(1)
+
+            # Anisotropy invariants: one call per case/timestep computes all terms
+            if self.anisotropy_computer:
+                for case in self.config.cases:
+                    for timestep in timesteps:
+                        self.anisotropy_computer.compute_for_case(case, timestep, self.data_loader)
                         pbar.update(1)
 
     def process_all(self) -> None:
@@ -1419,8 +2027,13 @@ class TurbulenceStatsPipeline:
 
                     ref_Re = op.get_ref_Re(case, self.config.cases, self.config.Re)
 
-                    # Normalize (element-wise — works for any ndim)
-                    if self.config.norm_by_u_tau_sq and stat.name not in ('temperature', 'coeff_friction', 'heat_transfer_coeff', 'nusselt_number', 'turb_prandtl'):
+                    # Normalize (element-wise — works for any ndim). Anisotropy
+                    # invariants are already dimensionless (built from a
+                    # normalized tensor), so u_tau^2 normalization doesn't apply.
+                    if self.config.norm_by_u_tau_sq and stat.name not in (
+                        'temperature', 'coeff_friction', 'heat_transfer_coeff', 'nusselt_number', 'turb_prandtl',
+                        'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
+                    ):
                         normed = op.norm_turb_stat_wrt_u_tau_sq(ux_data, values, ref_Re, y_coords=y_coords)
                     else:
                         normed = values
@@ -1430,15 +2043,31 @@ class TurbulenceStatsPipeline:
                         normed = op.norm_ux_velocity_wrt_u_tau(ux_data, ref_Re, y_coords=y_coords)
                         print(f'u1 velocity normalised by u_tau for {case}, {timestep}')
 
-                    # Symmetric averaging along axis 0 (wall-normal direction)
+                    # Symmetric averaging along axis 0 (wall-normal direction).
+                    # Anisotropy invariants are excluded: II/III are nonlinear
+                    # (quadratic/cubic) functions of the anisotropy tensor, so
+                    # averaging them pointwise across the two halves is not the
+                    # same as computing invariants of an averaged tensor — it
+                    # can produce (II, III) pairs outside the realizable Lumley
+                    # triangle even when every source point was valid. Kept at
+                    # full profile here; _plot_lumley_triangle_figure does a
+                    # plain near-wall truncation (no averaging) instead.
                     is_x_profile_only = getattr(stat, 'x_profile_only', False)
-                    if self.config.half_channel_plot and not is_x_profile_only:
+                    is_anisotropy_invariant = stat.name in (
+                        'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
+                    )
+                    if self.config.half_channel_plot and not is_x_profile_only and not is_anisotropy_invariant:
                         half = normed.shape[0] // 2
                         if stat.name != 'u_prime_v_prime' and stat.name != 'temperature':
                             normed_avg = op.symmetric_average(normed)
                             stat.processed_results[(case, timestep)] = normed_avg
                         else:
-                            stat.processed_results[(case, timestep)] = normed[:half]
+                            # 'upper' mirrors symmetric_average's own "second
+                            # half" convention (np.flip(...)[:half]), so this
+                            # stays index-aligned with _get_y_plus's coordinates.
+                            side_sliced = (np.flip(normed, axis=0)[:half]
+                                           if self.config.half_channel_side == 'upper' else normed[:half])
+                            stat.processed_results[(case, timestep)] = side_sliced
                     else:
                         stat.processed_results[(case, timestep)] = normed
 
@@ -1463,12 +2092,18 @@ class TurbulenceStatsPipeline:
             'ReStresses': [],
             'Profiles': [],
             'ReStressBudget': [],
-            'TkeBudget': []
+            'TkeBudget': [],
+            'BodyForce': [],
+            'Anisotropy': [],
         }
         for stat in self.statistics:
             if isinstance(stat, BudgetTerm):
                 grouped['ReStressBudget'].append(stat)
                 grouped['TkeBudget'].append(stat)
+            elif isinstance(stat, ForceTerm):
+                grouped['BodyForce'].append(stat)
+            elif isinstance(stat, AnisotropyTerm):
+                grouped['Anisotropy'].append(stat)
             elif isinstance(stat, ReStresses):
                 grouped['ReStresses'].append(stat)
             elif isinstance(stat, Profiles):
@@ -1571,7 +2206,10 @@ class TurbulencePlotter:
         if stat_name == 'ux_velocity' and self.config.norm_ux_by_u_tau:
             return '$U_x/u_\\tau$'
 
-        if self.config.norm_by_u_tau_sq and stat_name not in ('coeff_friction', 'heat_transfer_coeff', 'nusselt_number'):
+        if self.config.norm_by_u_tau_sq and stat_name not in (
+            'coeff_friction', 'heat_transfer_coeff', 'nusselt_number',
+            'reynolds_ii', 'reynolds_iii', 'vorticity_ii', 'vorticity_iii',
+        ):
             if isinstance(base, str) and base.startswith('$') and base.endswith('$'):
                 return base[:-1] + '/u_\\tau^2$'
             return f'{base} / $u_\\tau^2$'
@@ -1643,15 +2281,17 @@ class TurbulencePlotter:
         return [float(s.strip()) for s in self.config.x_profile_y_coords.split(',') if s.strip()]
 
     def _get_x_profile_y_indices(self) -> List[Tuple[int, float]]:
-        """Return list of (y-index, actual_y_value) for requested x-profile locations."""
+        """Return list of (y-index, actual_y_value) for requested x-profile locations.
+
+        An empty list means no explicit locations were requested, in which case
+        the caller should average over y instead of picking specific rows.
+        """
         y_coords = getattr(self.data_loader, 'y_coords', None)
         if y_coords is None:
             return []
         requested = self._parse_x_profile_y_coords()
         if not requested:
-            # Default: channel centreline
-            mid = len(y_coords) // 2
-            return [(mid, float(y_coords[mid]))]
+            return []
         indices = []
         for yc in requested:
             idx = int(np.argmin(np.abs(y_coords - yc)))
@@ -1676,6 +2316,14 @@ class TurbulencePlotter:
             return [('', values)]
 
         y_indices = self._get_x_profile_y_indices()
+        if not y_indices:
+            # Default: average over y
+            if values.ndim == 2:
+                return [(' (y-avg)', values.mean(axis=0))]
+            if values.ndim == 3:
+                return [(' (y-avg)', values.mean(axis=(0, 2)))]
+            return [('', np.ravel(values))]
+
         if values.ndim == 2:
             return [(f' y={yv:.3g}', values[idx, :]) for idx, yv in y_indices]
         if values.ndim == 3:
@@ -1704,7 +2352,9 @@ class TurbulencePlotter:
         class_titles = {
             'ReStresses': 'Reynolds Stresses',
             'Profiles': 'Profiles',
-            'ReStressBudget': 'TKE Budget'
+            'ReStressBudget': 'TKE Budget',
+            'BodyForce': 'Body Force Analysis',
+            'Anisotropy': 'Anisotropy (Lumley Triangle)',
         }
 
         for class_name, stats_list in grouped_statistics.items():
@@ -1751,6 +2401,16 @@ class TurbulencePlotter:
         is_budget = all(isinstance(s, BudgetTerm) for s in statistics)
         if is_budget:
             return self._plot_budget_figure(statistics, title)
+
+        # ---- Body force analysis: all terms on a single axes ----
+        is_force = all(isinstance(s, ForceTerm) for s in statistics)
+        if is_force:
+            return self._plot_force_figure(statistics, title)
+
+        # ---- Anisotropy invariants: Lumley triangle(s) ----
+        is_anisotropy = all(isinstance(s, AnisotropyTerm) for s in statistics)
+        if is_anisotropy:
+            return self._plot_lumley_triangle_figure(statistics, title)
 
         # ---- Standard subplot layout ----
         n_stats = len(statistics)
@@ -1843,6 +2503,171 @@ class TurbulencePlotter:
         if handles:
             ax.legend(fontsize=self._get_legend_fontsize())
         self._apply_axis_text_style(ax)
+        return fig
+
+    def _plot_force_figure(self, statistics, title: str):
+        """Plot all body-force terms (pressure, buoyancy, Lorentz) on a single axes."""
+        component_labels = {'1': 'x', '2': 'y', '3': 'z'}
+        component = component_labels.get(self.config.body_force_component, self.config.body_force_component)
+        fig = Figure(figsize=(10, 6), constrained_layout=True)
+        ax = fig.add_subplot(111)
+
+        for stat in statistics:
+            for (case, timestep), values in stat.processed_results.items():
+                y_plus = self._get_y_plus(case, timestep)
+                if y_plus is None:
+                    continue
+                profiles = self._extract_profiles(values)
+                for suffix, profile in profiles:
+                    label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
+                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                    linestyle = self._get_linestyle(case)
+                    marker = self._get_marker(case)
+                    self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
+
+        ax.axhline(y=0, color='gray', linewidth=0.5, linestyle='-')
+        ax.set_title(f'Body Force Analysis ({component}-component)', fontsize=self._get_title_fontsize())
+        ax.set_xlabel(self._get_y_profile_xlabel(), fontsize=self._get_axis_label_fontsize())
+        if self.config.norm_by_u_tau_sq:
+            ax.set_ylabel('Force magnitude / $u_\\tau^2$', fontsize=self._get_axis_label_fontsize())
+        else:
+            ax.set_ylabel('Force magnitude', fontsize=self._get_axis_label_fontsize())
+        ax.grid(True)
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(fontsize=self._get_legend_fontsize())
+        self._apply_axis_text_style(ax)
+        return fig
+
+    def _lumley_triangle_boundaries(self) -> Dict[str, Tuple[np.ndarray, np.ndarray]]:
+        """Realizability boundary of the Lumley triangle in (III, II) space.
+
+        Built directly from the eigenvalue constraints of a traceless
+        symmetric 3x3 tensor (sum(lambda_i) = 0, -1/3 <= lambda_i <= 2/3)
+        using the same II = -0.5*sum(lambda_i**2), III = prod(lambda_i)
+        definitions as op.second_invariant/op.third_invariant, so the
+        boundary curves are guaranteed self-consistent with the plotted
+        data rather than risking an algebra slip in an inverted closed form.
+        """
+        def invariants(l1, l2, l3):
+            ii = -0.5 * (l1 ** 2 + l2 ** 2 + l3 ** 2)
+            iii = l1 * l2 * l3
+            return iii, ii
+
+        lam = np.linspace(0.0, 1.0 / 3.0, 100)
+
+        # Axisymmetric expansion (rod-like): lambda2 = lambda3 = -lambda1/2
+        rod = invariants(2 * lam, -lam, -lam)
+
+        # Axisymmetric contraction (disk-like): lambda1 = lambda2 = -lambda3/2
+        disk = invariants(lam, lam, -2 * lam)
+
+        # Two-component turbulence: lambda3 = -1/3
+        t = np.linspace(-1.0 / 3.0, 1.0 / 6.0, 100)
+        two_component = invariants(1.0 / 3.0 - t, t, np.full_like(t, -1.0 / 3.0))
+
+        return {
+            'axisymmetric_expansion': rod,
+            'axisymmetric_contraction': disk,
+            'two_component': two_component,
+        }
+
+    def _plot_lumley_triangle_figure(self, statistics, title: str):
+        """Plot Reynolds-stress and/or vorticity anisotropy invariants as
+        Lumley triangles — one subplot per kind, each case/timestep traced
+        as a curve in (III, -II) space (wall to centerline) against the
+        realizability boundary.
+
+        Each line gets its own marker shape plus a distinct line/marker-edge
+        colour (identity), while the marker fill is colour-graded by
+        distance from the wall (physical position, via a colourbar) — two
+        separate visual channels rather than relying on marker shape alone.
+        """
+        by_kind: Dict[str, Dict[str, Any]] = {}
+        for stat in statistics:
+            kind, _, invariant = stat.name.partition('_')
+            by_kind.setdefault(kind, {})[invariant] = stat
+
+        kinds = [k for k, terms in by_kind.items() if 'ii' in terms and 'iii' in terms]
+        if not kinds:
+            return None
+
+        kind_titles = {'reynolds': 'Reynolds Stress', 'vorticity': 'Vorticity'}
+        boundaries = self._lumley_triangle_boundaries()
+        marker_cycle = ['o', 's', '^', 'D', 'x', 'P', 'v', '*']
+
+        fig = Figure(figsize=(7 * len(kinds) + 1, 6), constrained_layout=True)
+        axs = np.array(fig.subplots(nrows=1, ncols=len(kinds), squeeze=False))[0]
+
+        for col, kind in enumerate(kinds):
+            ax = axs[col]
+            ii_stat = by_kind[kind]['ii']
+            iii_stat = by_kind[kind]['iii']
+
+            for iii_b, ii_b in boundaries.values():
+                ax.plot(iii_b, -ii_b, color='black', linewidth=1, zorder=1)
+
+            scatter = None
+            marker_index = 0
+            for (case, timestep), ii_values in ii_stat.processed_results.items():
+                iii_values = iii_stat.processed_results.get((case, timestep))
+                if iii_values is None:
+                    continue
+                # as_wall_distance=True: always 0 at the (selected) wall,
+                # increasing toward the centreline — a plain signed y would
+                # run the wrong way for 'upper' (+1 at the wall).
+                y_plus = self._get_y_plus(case, timestep, as_wall_distance=True)
+                if y_plus is None:
+                    continue
+
+                iii_profiles = dict(self._extract_profiles(iii_values))
+                for suffix, ii_profile in self._extract_profiles(ii_values):
+                    iii_profile = iii_profiles.get(suffix)
+                    if iii_profile is None:
+                        continue
+
+                    # Half-channel: truncate to the near-wall half here (matching
+                    # y_plus's already-halved, side-sliced length) rather than
+                    # averaging II/III across both walls in process_all — see
+                    # the note there on why that would produce unrealizable
+                    # (out-of-triangle) points.
+                    if self.config.half_channel_plot:
+                        if self.config.half_channel_side == 'upper':
+                            ii_profile = np.flip(ii_profile)[:len(y_plus)]
+                            iii_profile = np.flip(iii_profile)[:len(y_plus)]
+                        else:
+                            ii_profile = ii_profile[:len(y_plus)]
+                            iii_profile = iii_profile[:len(y_plus)]
+
+                    label = self._build_legend_label(kind_titles.get(kind, kind), case, timestep, suffix)
+                    marker = marker_cycle[marker_index % len(marker_cycle)]
+                    marker_index += 1
+                    line_color = self._get_color(f'{case}|{timestep}|{kind}|{suffix}', kind)
+
+                    # Connecting line + marker edge use a distinct colour per
+                    # line (identity); marker fill stays colour-graded by
+                    # wall distance (physical position) — see docstring.
+                    ax.plot(iii_profile, -ii_profile, color=line_color, linewidth=1.0, zorder=1)
+                    scatter = ax.scatter(
+                        iii_profile, -ii_profile, c=y_plus, cmap='viridis_r',
+                        marker=marker, s=32, label=label, zorder=2,
+                        edgecolors=line_color, linewidths=1.0,
+                    )
+
+            if scatter is not None:
+                cbar = fig.colorbar(scatter, ax=ax)
+                color_label = self._get_y_profile_xlabel() if self.config.norm_y_to_y_plus else 'Distance from wall'
+                cbar.set_label(color_label, fontsize=self._get_axis_label_fontsize())
+
+            ax.set_title(f'{kind_titles.get(kind, kind)} Anisotropy', fontsize=self._get_title_fontsize())
+            ax.set_xlabel('$III$', fontsize=self._get_axis_label_fontsize())
+            ax.set_ylabel('$-II$', fontsize=self._get_axis_label_fontsize())
+            ax.grid(True)
+            handles, labels = ax.get_legend_handles_labels()
+            if handles:
+                ax.legend(fontsize=self._get_legend_fontsize())
+            self._apply_axis_text_style(ax)
+
         return fig
 
     def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, Budget]],
@@ -1983,7 +2808,9 @@ class TurbulencePlotter:
 
                 y = y_coords.copy()
                 if self.config.half_channel_plot:
-                    y = y[:values.shape[0]]
+                    # Same wall-first slicing convention as _get_y_plus.
+                    y = (np.flip(y)[:values.shape[0]] if self.config.half_channel_side == 'upper'
+                         else y[:values.shape[0]])
 
                 X, Y = np.meshgrid(x_coords, y)
 
@@ -2146,31 +2973,48 @@ class TurbulencePlotter:
                     label='$u^+ = 2.5ln(y^+) + 5.5$', color='black', alpha=0.5)
             self._apply_xscale(ax)
 
-    def _get_y_plus(self, case: str, timestep: str) -> Optional[np.ndarray]:
-        """Calculate y or y+ coordinates for a case"""
+    def _get_y_plus(self, case: str, timestep: str, as_wall_distance: bool = False) -> Optional[np.ndarray]:
+        """Calculate y, y+, or wall-distance coordinates for a case.
+
+        Full channel: y spans [-1, 1] as loaded.
+        Half channel: 'lower' -> y in [-1, 0] (near the y=-1 wall), 'upper'
+        -> y in [0, 1] (near the y=+1 wall) — matching half_channel_side.
+        y+ normalization always measures distance from the selected wall
+        (0 at the wall), regardless of which raw range is shown.
+
+        `as_wall_distance` forces a 0-at-the-wall, increasing-toward-
+        centreline return even when norm_y_to_y_plus is off — for callers
+        like the Lumley triangle that colour points by distance from the
+        wall, where the raw signed y (which is +1 *at* the wall for
+        'upper') would be a direction-flipped, misleading colour scale.
+        """
         ux_data = self.data_loader.get(case, 'u1', timestep)
         if ux_data is None:
             print(f'Missing u1 data for plotting: {case}, {timestep}')
             return None
 
         y_coords = getattr(self.data_loader, 'y_coords', None)
+        y = y_coords.copy() if y_coords is not None else ux_data[:, 1]
 
-        if y_coords is not None:
-            # Native array mode
-            y = y_coords.copy()
-            if self.config.half_channel_plot:
-                y = y[:len(y)//2] + 1
+        if self.config.half_channel_plot:
+            # Must match op.symmetric_average's fold length exactly: for odd
+            # ny that's half+1 (it keeps the centerline point).
+            half_len = len(y) - len(y) // 2
+            # 'upper' mirrors symmetric_average's own "second half"
+            # convention (np.flip(...)[:half]) so a case/timestep's data and
+            # coordinates stay index-aligned wall-first either way.
+            side = self.config.half_channel_side
+            y = np.flip(y)[:half_len] if side == 'upper' else y[:half_len]
+            wall_distance = (1.0 - y) if side == 'upper' else (y + 1.0)
         else:
-            # Legacy 3-column mode
-            if self.config.half_channel_plot:
-                y = (ux_data[:len(ux_data)//2, 1] + 1)
-            else:
-                y = ux_data[:, 1]
+            wall_distance = y
 
         if self.config.norm_y_to_y_plus:
             cur_Re = op.get_Re(case, self.config.cases, self.config.Re, ux_data,
                                self.config.forcing, y_coords=y_coords)
-            return op.norm_y_to_y_plus(y, ux_data, cur_Re, y_coords=y_coords)
+            return op.norm_y_to_y_plus(wall_distance, ux_data, cur_Re, y_coords=y_coords)
+        elif as_wall_distance:
+            return wall_distance
         else:
             return y
 
