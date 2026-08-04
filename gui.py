@@ -39,11 +39,15 @@ class ScrollableFrame(ttk.Frame):
         self._canvas.configure(yscrollcommand=sb.set)
         self._canvas.pack(side='left', fill='both', expand=True)
         sb.pack(side='right', fill='y')
-        self.inner.bind('<Enter>', lambda e: self._bind_wheel())
-        self.inner.bind('<Leave>', lambda e: self._unbind_wheel())
+        # Bound to the canvas, not `inner` — `inner` is only as wide as its
+        # content, so binding to it left a dead strip between the content's
+        # edge and the scrollbar (part of the canvas's visible area, but
+        # outside inner's bounding box) where wheel scrolling didn't work.
+        self._canvas.bind('<Enter>', lambda e: self._bind_wheel())
+        self._canvas.bind('<Leave>', lambda e: self._unbind_wheel())
         self._scroll_accum = 0
         self._scroll_job = None
-        self._scroll_debounce_ms = 40 
+        self._scroll_debounce_ms = 40
 
     def _bind_wheel(self):
         self._canvas.bind_all('<MouseWheel>', self._scroll)
@@ -322,10 +326,13 @@ class TurbStatsTab(ttk.Frame):
             ttk.Label(r, text=label, width=24, anchor='w').pack(side='left')
             ttk.Combobox(r, textvariable=var, values=values,
                          state='readonly', width=14).pack(side='left')
+            return r
 
         def chk(frame, label, var, bootstyle=None):
             kwargs = {'bootstyle': bootstyle} if bootstyle else {}
-            ttk.Checkbutton(frame, text=label, variable=var, **kwargs).pack(anchor='w', pady=1)
+            w = ttk.Checkbutton(frame, text=label, variable=var, **kwargs)
+            w.pack(anchor='w', pady=1)
+            return w
 
         def trow(frame, label, height=2, label_above=False):
             """Text widget row; returns the Text widget.
@@ -351,6 +358,7 @@ class TurbStatsTab(ttk.Frame):
             t.configure(yscrollcommand=sb.set)
             t.pack(side='left', fill='x', expand=True)
             sb.pack(side='left', fill='y')
+            t.row = r  # outer row frame, for callers that need to show/hide the whole row
             return t
 
         # ---- Input Data ----
@@ -370,7 +378,7 @@ class TurbStatsTab(ttk.Frame):
 
         # ---- Thermal / MHD ----
         s = sec('Thermal / MHD Input Data')
-        chk(s, ' Thermal statistics on', bv('thermo_on', True), bootstyle='round-toggle')
+        thermal_toggle = chk(s, ' Thermal statistics', bv('thermo_on', False), bootstyle='round-toggle')
         self._t_ref_temp = trow(s, ' Ref. temperature (K)', height=2)
         self._t_ref_temp.insert('1.0', '570')
         self._t_ref_len = trow(s, ' Ref. length (m)', height=2)
@@ -379,15 +387,19 @@ class TurbStatsTab(ttk.Frame):
         self._t_ref_ubulk.insert('1.0', '0.0900625')
         self._t_wall_hf = trow(s, ' Wall heat flux (W/m²)', height=2)
         self._t_wall_hf.insert('1.0', '0.0')
-        crow(s, ' Working fluid', sv('working_fluid', 'lithium'),
+        working_fluid_row = crow(s, ' Working fluid', sv('working_fluid', 'lithium'),
              ['lithium', 'sodium', 'lead', 'bismuth', 'lbe', 'flibe', 'pbli'])
         self._t_gravity_dir = trow(s, ' Gravity direction (x,y,z)', height=2)
         self._t_gravity_dir.insert('1.0', '0, -1, 0')
-        chk(s, ' MHD statistics on', bv('mhd_on', True), bootstyle='round-toggle')
+        mhd_toggle = chk(s, ' MHD statistics', bv('mhd_on', False), bootstyle='round-toggle')
         self._t_mag_field_dir = trow(s, ' Magnetic field dir. (x,y,z)', height=2, label_above=True)
         self._t_mag_field_dir.insert('1.0', '0, 1, 0')
         self._t_stuart_number = trow(s, ' Stuart number (N)', height=2)
         self._t_stuart_number.insert('1.0', '0.0')
+
+        input_thermal_rows = [self._t_ref_temp.row, self._t_ref_len.row, self._t_ref_ubulk.row,
+                               self._t_wall_hf.row, working_fluid_row, self._t_gravity_dir.row]
+        input_mhd_rows = [self._t_mag_field_dir.row, self._t_stuart_number.row]
 
         # ---- Averaging ----
         s = sec('Averaging')
@@ -397,12 +409,13 @@ class TurbStatsTab(ttk.Frame):
 
         # ---- Statistics to Compute ----
         s = sec('Profiles')
-        chk(s, 'u_x velocity', bv('ux_velocity_on', True))
-        chk(s, 'u_y velocity', bv('uy_velocity_on', False))
-        chk(s, 'u_z velocity', bv('uz_velocity_on', False))
-        chk(s, 'Temperature', bv('temp_on', False))
-        chk(s, 'Friction coefficient', bv('coeff_friction_on', False))
-        chk(s, 'Vorticity (requires full 3D field)', bv('mean_vorticity_on', False))
+        ux_row = chk(s, 'u_x velocity', bv('ux_velocity_on', True))
+        uy_row = chk(s, 'u_y velocity', bv('uy_velocity_on', False))
+        uz_row = chk(s, 'u_z velocity', bv('uz_velocity_on', False))
+        temp_row = chk(s, 'Temperature', bv('temp_on', False))
+        friction_row = chk(s, 'Friction coefficient', bv('coeff_friction_on', False))
+        vort_row = chk(s, 'Vorticity (requires full 3D field)', bv('mean_vorticity_on', False))
+        profile_rows = [ux_row, uy_row, uz_row, temp_row, friction_row, vort_row]
 
         s = sec('Basic Statistics')
         chk(s, 'TKE', bv('tke_on', False))
@@ -420,12 +433,14 @@ class TurbStatsTab(ttk.Frame):
         chk(s, 'Reynolds Stress Budget terms', bv('re_stress_budget_on', False))
         crow(s, 'Budget component', sv('re_stress_component', 'uu11'),
              ['total', 'uu11', 'uu12', 'uu22', 'uu33'])
-        s = sec('Thermal Statistics')
+        thermal_stats_section = sec('Thermal Statistics')
+        s = thermal_stats_section
         chk(s, 'Wall Heat transfer coeff.', bv('heat_transf_coeff_on', False))
         chk(s, 'Wall Nusselt number', bv('Nusselt_number_on', False))
         chk(s, 'Wall Turbulent Prandtl number', bv('turb_prandtl_on', False))
 
-        s = sec('MHD Statistics')
+        mhd_stats_section = sec('MHD Statistics')
+        s = mhd_stats_section
         chk(s, 'jx current density (mean)', bv('j1_mean_on', False))
         chk(s, 'jy current density (mean)', bv('j2_mean_on', False))
         chk(s, 'jz current density (mean)', bv('j3_mean_on', False))
@@ -445,10 +460,11 @@ class TurbStatsTab(ttk.Frame):
 
         # ---- Normalisation ----
         s = sec('Normalisation')
-        chk(s, 'Normalise by u_τ²', bv('norm_by_u_tau_sq', True))
-        chk(s, 'Normalise U_x by u_τ', bv('norm_ux_by_u_tau', True))
-        chk(s, 'Normalise y to y⁺', bv('norm_y_to_y_plus', False))
-        chk(s, 'Normalise T by T_ref', bv('norm_temp_by_ref_temp', False))
+        norm_utau_row = chk(s, 'Normalise by u_τ²', bv('norm_by_u_tau_sq', True))
+        norm_ux_row = chk(s, 'Normalise U_x by u_τ', bv('norm_ux_by_u_tau', True))
+        norm_yplus_row = chk(s, 'Normalise y to y⁺', bv('norm_y_to_y_plus', False))
+        norm_temp_row = chk(s, 'Normalise T by T_ref', bv('norm_temp_by_ref_temp', False))
+        norm_rows = [norm_utau_row, norm_ux_row, norm_yplus_row, norm_temp_row]
 
         # ---- Plotting ----
         s = sec('Plotting')
@@ -461,10 +477,73 @@ class TurbStatsTab(ttk.Frame):
 
         # ---- Reference Data ----
         s = sec('Reference Data')
-        chk(s, 'Log-law reference', bv('ux_velocity_log_ref_on', True))
-        chk(s, 'MHD NK reference', bv('mhd_NK_ref_on', False))
-        crow(s, 'NK reference Hartmann no.', sv('mhd_NK_ref_case', 'Ha_6'), ['Ha_4', 'Ha_6'])
-        chk(s, 'MKM180 reference', bv('mkm180_ch_ref_on', False))
+        loglaw_row = chk(s, 'Log-law reference', bv('ux_velocity_log_ref_on', True))
+        mhd_nk_row = chk(s, 'MHD NK reference', bv('mhd_NK_ref_on', False))
+        nk_hartmann_row = crow(s, 'NK reference Hartmann no.', sv('mhd_NK_ref_case', 'Ha_6'), ['Ha_4', 'Ha_6'])
+        mkm180_row = chk(s, 'MKM180 reference', bv('mkm180_ch_ref_on', False))
+        ref_rows = [loglaw_row, mhd_nk_row, nk_hartmann_row, mkm180_row]
+
+        # ---- Thermal/MHD-driven visibility --------------------------------------
+        # Toggles/rows within each affected section are always fully re-packed in
+        # their canonical order (not left partially managed) — pack() otherwise
+        # just appends at the end of whichever siblings are currently managed,
+        # not back into their original slot. Same reasoning applies one level up:
+        # the Thermal/MHD Statistics section boxes themselves are hidden entirely
+        # (not just emptied), which needs every top-level section re-packed in
+        # order too.
+        all_sections = [c for c in f.winfo_children() if isinstance(c, ttk.Labelframe)]
+
+        def _update_thermal_mhd_visibility(*_args):
+            thermo_on = self.vars['thermo_on'].get()
+            mhd_on = self.vars['mhd_on'].get()
+
+            for sec_frame in all_sections:
+                sec_frame.pack_forget()
+            for sec_frame in all_sections:
+                if sec_frame is thermal_stats_section and not thermo_on:
+                    continue
+                if sec_frame is mhd_stats_section and not mhd_on:
+                    continue
+                sec_frame.pack(fill='x', padx=4, pady=3)
+
+            for w in [thermal_toggle] + input_thermal_rows + [mhd_toggle] + input_mhd_rows:
+                w.pack_forget()
+            thermal_toggle.pack(anchor='w', pady=1)
+            if thermo_on:
+                for w in input_thermal_rows:
+                    w.pack(fill='x', pady=1)
+            mhd_toggle.pack(anchor='w', pady=1)
+            if mhd_on:
+                for w in input_mhd_rows:
+                    w.pack(fill='x', pady=1)
+
+            for w in profile_rows:
+                w.pack_forget()
+            for w in profile_rows:
+                if w is temp_row and not thermo_on:
+                    continue
+                w.pack(anchor='w', pady=1)
+
+            for w in norm_rows:
+                w.pack_forget()
+            for w in norm_rows:
+                if w is norm_temp_row and not thermo_on:
+                    continue
+                w.pack(anchor='w', pady=1)
+
+            for w in ref_rows:
+                w.pack_forget()
+            for w in ref_rows:
+                if w in (mhd_nk_row, nk_hartmann_row) and not mhd_on:
+                    continue
+                if w is nk_hartmann_row:
+                    w.pack(fill='x', pady=1)
+                else:
+                    w.pack(anchor='w', pady=1)
+
+        self.vars['thermo_on'].trace_add('write', _update_thermal_mhd_visibility)
+        self.vars['mhd_on'].trace_add('write', _update_thermal_mhd_visibility)
+        _update_thermal_mhd_visibility()
 
         # ---- Console ----
         ttk.Label(parent, text='Console output:').pack(anchor='w', padx=5)
