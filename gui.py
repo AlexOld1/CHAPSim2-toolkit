@@ -2,7 +2,7 @@
 """CHAPSim2 Toolkit GUI"""
 
 import tkinter as tk
-from tkinter import filedialog, messagebox, scrolledtext
+from tkinter import filedialog, messagebox
 import ttkbootstrap as ttk
 import threading
 import sys
@@ -16,12 +16,6 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import numpy as np
 
-_BG       = '#222222'
-_INPUT_BG = '#303030'
-_FG       = '#ffffff'
-_SEL_BG   = '#375a7f'
-_SEL_FG   = '#ffffff'
-
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -30,11 +24,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # =====================================================================================
 
 class ScrollableFrame(ttk.Frame):
-    """Vertically scrollable frame with mousewheel support."""
+    """Vertically scrollable frame with mousewheel support.
+
+    """
 
     def __init__(self, parent, **kwargs):
         super().__init__(parent, **kwargs)
-        self._canvas = tk.Canvas(self, borderwidth=0, highlightthickness=0, background=_BG)
+        self._canvas = ttk.Canvas(self, borderwidth=0, highlightthickness=0)
         sb = ttk.Scrollbar(self, orient='vertical', command=self._canvas.yview)
         self.inner = ttk.Frame(self._canvas)
         self.inner.bind('<Configure>',
@@ -45,6 +41,9 @@ class ScrollableFrame(ttk.Frame):
         sb.pack(side='right', fill='y')
         self.inner.bind('<Enter>', lambda e: self._bind_wheel())
         self.inner.bind('<Leave>', lambda e: self._unbind_wheel())
+        self._scroll_accum = 0
+        self._scroll_job = None
+        self._scroll_debounce_ms = 40 
 
     def _bind_wheel(self):
         self._canvas.bind_all('<MouseWheel>', self._scroll)
@@ -58,11 +57,18 @@ class ScrollableFrame(ttk.Frame):
 
     def _scroll(self, event):
         if event.num == 4:
-            self._canvas.yview_scroll(-1, 'units')
+            self._scroll_accum += -1
         elif event.num == 5:
-            self._canvas.yview_scroll(1, 'units')
+            self._scroll_accum += 1
         else:
-            self._canvas.yview_scroll(int(-1 * (event.delta / 120)), 'units')
+            self._scroll_accum += int(-1 * (event.delta / 120))
+        if self._scroll_job is None:
+            self._scroll_job = self._canvas.after(self._scroll_debounce_ms, self._apply_scroll)
+
+    def _apply_scroll(self):
+        self._canvas.yview_scroll(self._scroll_accum, 'units')
+        self._scroll_accum = 0
+        self._scroll_job = None
 
 
 class FigurePanel(ttk.Frame):
@@ -131,12 +137,11 @@ class TextRedirect:
 
 
 def _make_console(parent, height=7):
-    w = scrolledtext.ScrolledText(
+    # ttk.ScrolledText wraps an autostyled ttk.Text internally, so this
+    # follows the active theme automatically — no manual colours needed.
+    w = ttk.ScrolledText(
         parent, height=height, state='disabled',
         font=('Monospace', 8), wrap='word',
-        background=_INPUT_BG, foreground=_FG,
-        insertbackground=_FG, selectbackground=_SEL_BG,
-        selectforeground=_SEL_FG, relief='flat', borderwidth=0,
     )
     return w
 
@@ -285,7 +290,7 @@ class TurbStatsTab(ttk.Frame):
             return self.vars[name]
 
         def sec(title):
-            lf = ttk.LabelFrame(f, text=title)
+            lf = ttk.Labelframe(f, text=title, padding=(8, 6))
             lf.pack(fill='x', padx=4, pady=3)
             return lf
 
@@ -294,13 +299,20 @@ class TurbStatsTab(ttk.Frame):
             r.pack(fill='x', pady=1)
             ttk.Label(r, text=label, width=24, anchor='w').pack(side='left')
             ttk.Entry(r, textvariable=var).pack(side='left', fill='x', expand=True)
+            return r
 
-        def brow(frame, label, var):
+        def brow(frame, label, var, label_above=False):
             r = ttk.Frame(frame)
             r.pack(fill='x', pady=1)
-            ttk.Label(r, text=label, width=24, anchor='w').pack(side='left')
-            ttk.Entry(r, textvariable=var).pack(side='left', fill='x', expand=True)
-            ttk.Button(r, text='…', width=3,
+            if label_above:
+                ttk.Label(r, text=label, anchor='w').pack(side='top', fill='x')
+                entry_row = ttk.Frame(r)
+                entry_row.pack(side='top', fill='x')
+            else:
+                ttk.Label(r, text=label, width=24, anchor='w').pack(side='left')
+                entry_row = r
+            ttk.Entry(entry_row, textvariable=var).pack(side='left', fill='x', expand=True)
+            ttk.Button(entry_row, text='…', width=3,
                        command=lambda v=var: v.set(filedialog.askdirectory() or v.get())
                        ).pack(side='left')
 
@@ -311,20 +323,30 @@ class TurbStatsTab(ttk.Frame):
             ttk.Combobox(r, textvariable=var, values=values,
                          state='readonly', width=14).pack(side='left')
 
-        def chk(frame, label, var):
-            ttk.Checkbutton(frame, text=label, variable=var).pack(anchor='w', pady=1)
+        def chk(frame, label, var, bootstyle=None):
+            kwargs = {'bootstyle': bootstyle} if bootstyle else {}
+            ttk.Checkbutton(frame, text=label, variable=var, **kwargs).pack(anchor='w', pady=1)
 
-        def trow(frame, label, height=2):
-            """Text widget row; returns the Text widget."""
+        def trow(frame, label, height=2, label_above=False):
+            """Text widget row; returns the Text widget.
+
+            label_above: put the label on its own line above the text box
+            instead of beside it — for labels too long for the fixed
+            width=24 label column, which would otherwise be clipped behind
+            the box.
+            """
             r = ttk.Frame(frame)
             r.pack(fill='x', pady=1)
-            ttk.Label(r, text=label, width=24, anchor='nw').pack(side='left', anchor='n')
-            inner = ttk.Frame(r)
-            inner.pack(side='left', fill='x', expand=True)
-            t = tk.Text(inner, height=height, width=26, font=('TkDefaultFont', 9),
-                        background=_INPUT_BG, foreground=_FG, insertbackground=_FG,
-                        selectbackground=_SEL_BG, selectforeground=_SEL_FG,
-                        relief='flat', borderwidth=0)
+            if label_above:
+                ttk.Label(r, text=label, anchor='w').pack(side='top', fill='x')
+                inner = ttk.Frame(r)
+                inner.pack(side='top', fill='x', expand=True)
+            else:
+                ttk.Label(r, text=label, width=24, anchor='nw').pack(side='left', anchor='n')
+                inner = ttk.Frame(r)
+                inner.pack(side='left', fill='x', expand=True)
+            t = ttk.Text(inner, height=height, width=26, font=('TkDefaultFont', 9),
+                         relief='flat', borderwidth=0)
             sb = ttk.Scrollbar(inner, orient='vertical', command=t.yview)
             t.configure(yscrollcommand=sb.set)
             t.pack(side='left', fill='x', expand=True)
@@ -332,91 +354,94 @@ class TurbStatsTab(ttk.Frame):
             return t
 
         # ---- Input Data ----
-        s = sec('Input Data')
-        brow(s, 'Folder path', sv('folder_path', ''))
-        crow(s, 'Input format', sv('input_format', 'visu'), ['visu', 'text'])
-        crow(s, 'Data type', sv('xdmf_data_type', 'tsp_avg'),
-             ['tsp_avg', 't_avg', 'inst'])
-        self._t_cases = trow(s, 'Cases (one per line)', height=3)
+        s = sec('Case Loading')
+        brow(s, ' Directory containing case folders:', sv('folder_path', ''), label_above=True)
+        self._t_cases = trow(s, ' Case folder names (one per line)', height=3, label_above=True)
         self._t_cases.insert('1.0', 'Tests')
-        self._t_timesteps = trow(s, 'Timesteps (one per line)', height=3)
+        self._t_timesteps = trow(s, ' Timesteps (one per line)', height=3, label_above=True)
         self._t_timesteps.insert('1.0', '680000')
-        self._t_re = trow(s, 'Re (one per case)', height=2)
+        crow(s, ' Input format', sv('input_format', 'xdmf'), ['xdmf', 'text'])
+        crow(s, ' Data type', sv('xdmf_data_type', 'tsp_avg'), ['tsp_avg', 't_avg', 'inst'])
+
+        s = sec('Isothermal Input Data')
+        self._t_re = trow(s, ' Bulk Reynolds no. (one per case if different)', height=2, label_above=True)
         self._t_re.insert('1.0', '5000')
-        crow(s, 'Forcing', sv('forcing', 'CMF'), ['CMF', 'CPG'])
-        erow(s, 'Slice label', sv('slice_label', ''))
+        crow(s, ' Flow forcing', sv('forcing', 'CMF'), ['CMF', 'CPG'])
 
         # ---- Thermal / MHD ----
-        s = sec('Thermal / MHD')
-        chk(s, 'Thermal statistics on', bv('thermo_on', True))
-        chk(s, 'MHD statistics on', bv('mhd_on', True))
-        self._t_ref_temp = trow(s, 'Ref. temperature (K)', height=2)
+        s = sec('Thermal / MHD Input Data')
+        chk(s, ' Thermal statistics on', bv('thermo_on', True), bootstyle='round-toggle')
+        self._t_ref_temp = trow(s, ' Ref. temperature (K)', height=2)
         self._t_ref_temp.insert('1.0', '570')
-        self._t_ref_len = trow(s, 'Ref. length (m)', height=2)
+        self._t_ref_len = trow(s, ' Ref. length (m)', height=2)
         self._t_ref_len.insert('1.0', '0.05')
-        self._t_ref_ubulk = trow(s, 'Ref. U_bulk (m/s)', height=2)
+        self._t_ref_ubulk = trow(s, ' Ref. U_bulk (m/s)', height=2)
         self._t_ref_ubulk.insert('1.0', '0.0900625')
-        self._t_wall_hf = trow(s, 'Wall heat flux (W/m²)', height=2)
+        self._t_wall_hf = trow(s, ' Wall heat flux (W/m²)', height=2)
         self._t_wall_hf.insert('1.0', '0.0')
-        crow(s, 'Working fluid', sv('working_fluid', 'lithium'),
+        crow(s, ' Working fluid', sv('working_fluid', 'lithium'),
              ['lithium', 'sodium', 'lead', 'bismuth', 'lbe', 'flibe', 'pbli'])
-        self._t_gravity_dir = trow(s, 'Gravity dir. (x,y,z)', height=2)
+        self._t_gravity_dir = trow(s, ' Gravity direction (x,y,z)', height=2)
         self._t_gravity_dir.insert('1.0', '0, -1, 0')
-        self._t_mag_field_dir = trow(s, 'Mag. field dir. (x,y,z)', height=2)
+        chk(s, ' MHD statistics on', bv('mhd_on', True), bootstyle='round-toggle')
+        self._t_mag_field_dir = trow(s, ' Magnetic field dir. (x,y,z)', height=2, label_above=True)
         self._t_mag_field_dir.insert('1.0', '0, 1, 0')
-        self._t_stuart_number = trow(s, 'Stuart number (N)', height=2)
+        self._t_stuart_number = trow(s, ' Stuart number (N)', height=2)
         self._t_stuart_number.insert('1.0', '0.0')
 
         # ---- Averaging ----
         s = sec('Averaging')
-        chk(s, 'Average x direction', bv('average_x_direction', False))
-        chk(s, 'Average z direction', bv('average_z_direction', True))
-        chk(s, 'Average over timesteps', bv('average_over_timesteps', False))
+        chk(s, ' Average x direction', bv('average_x_direction', False))
+        chk(s, ' Average z direction', bv('average_z_direction', True))
+        chk(s, ' Average over timesteps', bv('average_over_timesteps', False))
 
         # ---- Statistics to Compute ----
-        s = sec('Statistics to Compute')
+        s = sec('Profiles')
         chk(s, 'u_x velocity', bv('ux_velocity_on', True))
         chk(s, 'u_y velocity', bv('uy_velocity_on', False))
         chk(s, 'u_z velocity', bv('uz_velocity_on', False))
         chk(s, 'Temperature', bv('temp_on', False))
-        chk(s, 'TKE', bv('tke_on', False))
         chk(s, 'Friction coefficient', bv('coeff_friction_on', False))
         chk(s, 'Vorticity (requires full 3D field)', bv('mean_vorticity_on', False))
-        chk(s, "Vorticity RMS (requires full 3D field)", bv('vorticity_on', False))
-        crow(s, 'Vorticity component', sv('vorticity_component', 'z'), ['x', 'y', 'z'])
-        chk(s, 'Reynolds-stress anisotropy (Lumley triangle)', bv('reynolds_anisotropy_on', False))
-        chk(s, 'Vorticity anisotropy (Lumley triangle, requires full 3D field)', bv('vorticity_anisotropy_on', False))
+
+        s = sec('Basic Statistics')
+        chk(s, 'TKE', bv('tke_on', False))
         chk(s, "u'u' Reynolds stress", bv('u_prime_sq_on', False))
         chk(s, "u'v' Reynolds stress", bv('u_prime_v_prime_on', False))
         chk(s, "v'v' Reynolds stress", bv('v_prime_sq_on', False))
         chk(s, "v'w' Reynolds stress", bv('v_prime_w_prime_on', False))
         chk(s, "w'w' Reynolds stress", bv('w_prime_sq_on', False))
-        chk(s, 'jx current density (mean)', bv('j1_mean_on', False))
-        chk(s, 'jy current density (mean)', bv('j2_mean_on', False))
-        chk(s, 'jz current density (mean)', bv('j3_mean_on', False))
-        chk(s, "jx' RMS (streamwise current density)", bv('j1_rms_on', False))
-        chk(s, "jy' RMS (wall-normal current density)", bv('j2_rms_on', False))
-        chk(s, "jz' RMS (spanwise current density)", bv('j3_rms_on', False))
-        chk(s, 'Lorentz force x (mean)', bv('lorentz_force_x_on', False))
-        chk(s, 'Lorentz force y (mean)', bv('lorentz_force_y_on', False))
-        chk(s, 'Lorentz force z (mean)', bv('lorentz_force_z_on', False))
+        chk(s, "Vorticity Fluctuation RMS (requires full 3D field)", bv('vorticity_on', False))
+        crow(s, 'Vorticity component', sv('vorticity_component', 'z'), ['x', 'y', 'z'])
+
+        s = sec('Advanced Statistics')
+        chk(s, 'Reynolds-stress anisotropy (Lumley triangle)', bv('reynolds_anisotropy_on', False))
+        chk(s, 'Vorticity anisotropy (Lumley triangle, requires full 3D field)', bv('vorticity_anisotropy_on', False))
         chk(s, 'Reynolds Stress Budget terms', bv('re_stress_budget_on', False))
         crow(s, 'Budget component', sv('re_stress_component', 'uu11'),
              ['total', 'uu11', 'uu12', 'uu22', 'uu33'])
-        chk(s, 'Body force analysis', bv('body_force_on', False))
-        crow(s, 'Force component (1=x,2=y,3=z)', sv('body_force_component', '1'),
-             ['1', '2', '3'])
-        chk(s, 'Heat transfer coeff.', bv('heat_transf_coeff_on', False))
-        chk(s, 'Nusselt number', bv('Nusselt_number_on', False))
-        chk(s, 'Turbulent Prandtl number', bv('turb_prandtl_on', False))
-        chk(s, '2D surface plots', bv('surface_plot_on', False))
+        s = sec('Thermal Statistics')
+        chk(s, 'Wall Heat transfer coeff.', bv('heat_transf_coeff_on', False))
+        chk(s, 'Wall Nusselt number', bv('Nusselt_number_on', False))
+        chk(s, 'Wall Turbulent Prandtl number', bv('turb_prandtl_on', False))
+
+        s = sec('MHD Statistics')
+        chk(s, 'jx current density (mean)', bv('j1_mean_on', False))
+        chk(s, 'jy current density (mean)', bv('j2_mean_on', False))
+        chk(s, 'jz current density (mean)', bv('j3_mean_on', False))
+        chk(s, "jx' RMS (fluc)", bv('j1_rms_on', False))
+        chk(s, "jy' RMS (fluc)", bv('j2_rms_on', False))
+        chk(s, "jz' RMS (fluc)", bv('j3_rms_on', False))
+        chk(s, 'Lorentz force x (mean)', bv('lorentz_force_x_on', False))
+        chk(s, 'Lorentz force y (mean)', bv('lorentz_force_y_on', False))
+        chk(s, 'Lorentz force z (mean)', bv('lorentz_force_z_on', False))
 
         # ---- Profile Options ----
         s = sec('Profile Options')
         crow(s, 'Profile direction', sv('profile_direction', 'y'), ['y', 'x', 'both'])
-        erow(s, 'Slice coords (x)', sv('slice_coords', ''))
-        erow(s, 'x crop', sv('x_crop', ''))
-        erow(s, 'x-prof. y coords', sv('x_profile_y_coords', ''))
+        erow(s, 'Slice coordinates (x)', sv('slice_coords', ''))
+        erow(s, 'Slice coordinates (y)', sv('x_profile_y_coords', ''))
+        erow(s, 'Domain crop (x)', sv('x_crop', ''))
 
         # ---- Normalisation ----
         s = sec('Normalisation')
@@ -427,20 +452,18 @@ class TurbStatsTab(ttk.Frame):
 
         # ---- Plotting ----
         s = sec('Plotting')
-        chk(s, 'Half channel', bv('half_channel_plot', False))
+        crow(s, 'Domain', sv('channel_plot_mode', 'full channel'),
+             ['full channel', 'half channel', 'surface plot'])
         crow(s, 'Half channel side', sv('half_channel_side', 'lower'), ['lower', 'upper'])
-        chk(s, 'Linear y scale', bv('linear_y_scale', True))
-        chk(s, 'Log x scale (semilog)', bv('log_y_scale', False))
+        crow(s, 'Axis scale', sv('axis_scale', 'linear'), ['linear', 'log'])
         chk(s, 'Multi-plot', bv('multi_plot', True))
-        chk(s, 'Save figures', bv('save_fig', True))
-        chk(s, 'Save to folder path', bv('save_to_path', True))
         chk(s, 'Large text', bv('large_text_on', False))
-        erow(s, 'Plot name', sv('plot_name', ''))
 
         # ---- Reference Data ----
         s = sec('Reference Data')
         chk(s, 'Log-law reference', bv('ux_velocity_log_ref_on', True))
         chk(s, 'MHD NK reference', bv('mhd_NK_ref_on', False))
+        crow(s, 'NK reference Hartmann no.', sv('mhd_NK_ref_case', 'Ha_6'), ['Ha_4', 'Ha_6'])
         chk(s, 'MKM180 reference', bv('mkm180_ch_ref_on', False))
 
         # ---- Console ----
@@ -532,7 +555,7 @@ class TurbStatsTab(ttk.Frame):
             slice_coords=v['slice_coords'].get(),
             x_crop=v['x_crop'].get(),
             x_profile_y_coords=v['x_profile_y_coords'].get(),
-            surface_plot_on=v['surface_plot_on'].get(),
+            surface_plot_on=v['channel_plot_mode'].get() == 'surface plot',
             u_prime_sq_on=v['u_prime_sq_on'].get(),
             u_prime_v_prime_on=v['u_prime_v_prime_on'].get(),
             v_prime_sq_on=v['v_prime_sq_on'].get(),
@@ -556,23 +579,21 @@ class TurbStatsTab(ttk.Frame):
             norm_ux_by_u_tau=v['norm_ux_by_u_tau'].get(),
             norm_y_to_y_plus=v['norm_y_to_y_plus'].get(),
             norm_temp_by_ref_temp=v['norm_temp_by_ref_temp'].get(),
-            slice_label=v['slice_label'].get(),
-            half_channel_plot=v['half_channel_plot'].get(),
+            half_channel_plot=v['channel_plot_mode'].get() == 'half channel',
             half_channel_side=v['half_channel_side'].get(),
-            linear_y_scale=v['linear_y_scale'].get(),
-            log_y_scale=v['log_y_scale'].get(),
+            linear_y_scale=v['axis_scale'].get() == 'linear',
+            log_y_scale=v['axis_scale'].get() == 'log',
             multi_plot=v['multi_plot'].get(),
             xdmf_data_type=v['xdmf_data_type'].get(),
             display_fig=False,          # always embedded; never plt.show()
-            save_fig=v['save_fig'].get(),
-            save_to_path=v['save_to_path'].get(),
+            save_fig=True,
+            save_to_path=True,
             large_text_on=v['large_text_on'].get(),
-            plot_name=v['plot_name'].get(),
+            plot_name='',
             ux_velocity_log_ref_on=v['ux_velocity_log_ref_on'].get(),
             mhd_NK_ref_on=v['mhd_NK_ref_on'].get(),
+            mhd_NK_ref_case=v['mhd_NK_ref_case'].get(),
             mkm180_ch_ref_on=v['mkm180_ch_ref_on'].get(),
-            body_force_on=v['body_force_on'].get(),
-            body_force_component=v['body_force_component'].get(),
             mean_vorticity_on=v['mean_vorticity_on'].get(),
             vorticity_on=v['vorticity_on'].get(),
             vorticity_component=v['vorticity_component'].get(),
@@ -624,6 +645,10 @@ class TurbStatsTab(ttk.Frame):
                 grouped = pipeline.get_statistics_by_class()
                 figs = plotter.plot_by_class(grouped, ref)
 
+                spectrum_fig = plotter.plot_spectrum(pipeline.spectrum_computer)
+                if spectrum_fig is not None:
+                    figs['Spectrum'] = spectrum_fig
+
                 if config.save_fig and figs:
                     plotter.save_figures_by_class(figs)
 
@@ -661,12 +686,11 @@ class TurbStatsTab(ttk.Frame):
             spec.loader.exec_module(mod)
             v = self.vars
             str_fields = {
-                'folder_path': '', 'input_format': 'visu', 'forcing': 'CMF',
-                'slice_label': '', 'working_fluid': 'lithium', 'profile_direction': 'y',
+                'folder_path': '', 'input_format': 'xdmf', 'forcing': 'CMF',
+                'working_fluid': 'lithium', 'profile_direction': 'y',
                 'slice_coords': '', 'x_crop': '', 'x_profile_y_coords': '',
-                're_stress_component': 'uu11', 'plot_name': '',
-                'body_force_component': '1', 'vorticity_component': 'z',
-                'half_channel_side': 'lower',
+                're_stress_component': 'uu11', 'vorticity_component': 'z',
+                'half_channel_side': 'lower', 'mhd_NK_ref_case': 'Ha_6',
             }
             bool_fields = {
                 'thermo_on': False, 'mhd_on': False,
@@ -682,14 +706,12 @@ class TurbStatsTab(ttk.Frame):
                 'j1_rms_on': False, 'j2_rms_on': False, 'j3_rms_on': False,
                 'lorentz_force_x_on': False, 'lorentz_force_y_on': False, 'lorentz_force_z_on': False,
                 're_stress_budget_on': False, 'heat_transf_coeff_on': False,
-                'Nusselt_number_on': False, 'turb_prandtl_on': False, 'surface_plot_on': False,
+                'Nusselt_number_on': False, 'turb_prandtl_on': False,
                 'norm_by_u_tau_sq': True, 'norm_ux_by_u_tau': True,
                 'norm_y_to_y_plus': False, 'norm_temp_by_ref_temp': False,
-                'half_channel_plot': False, 'linear_y_scale': True, 'log_y_scale': False,
-                'multi_plot': True, 'save_fig': True, 'save_to_path': True,
+                'multi_plot': True,
                 'large_text_on': False, 'ux_velocity_log_ref_on': True,
                 'mhd_NK_ref_on': False, 'mkm180_ch_ref_on': False,
-                'body_force_on': False,
             }
             for name, default in str_fields.items():
                 if name in v:
@@ -697,6 +719,13 @@ class TurbStatsTab(ttk.Frame):
             for name, default in bool_fields.items():
                 if name in v:
                     v[name].set(getattr(mod, name, default))
+            v['axis_scale'].set('log' if getattr(mod, 'log_y_scale', False) else 'linear')
+            if getattr(mod, 'surface_plot_on', False):
+                v['channel_plot_mode'].set('surface plot')
+            elif getattr(mod, 'half_channel_plot', False):
+                v['channel_plot_mode'].set('half channel')
+            else:
+                v['channel_plot_mode'].set('full channel')
 
             def set_t(widget, items):
                 widget.delete('1.0', tk.END)
@@ -753,7 +782,6 @@ class TurbStatsTab(ttk.Frame):
             f"input_format = '{v['input_format'].get()}'",
             f"cases = {fmts(cases)}",
             f"timesteps = {fmts(tss)}",
-            f"slice_label = '{v['slice_label'].get()}'",
             f"forcing = '{v['forcing'].get()}'",
             f"Re = {fmtn(Re)}",
             '',
@@ -789,7 +817,7 @@ class TurbStatsTab(ttk.Frame):
             f"slice_coords = '{v['slice_coords'].get()}'",
             f"x_crop = '{v['x_crop'].get()}'",
             f"x_profile_y_coords = '{v['x_profile_y_coords'].get()}'",
-            f"surface_plot_on = {v['surface_plot_on'].get()}",
+            f"surface_plot_on = {v['channel_plot_mode'].get() == 'surface plot'}",
             '',
             f"u_prime_sq_on = {v['u_prime_sq_on'].get()}",
             f"u_prime_v_prime_on = {v['u_prime_v_prime_on'].get()}",
@@ -810,9 +838,6 @@ class TurbStatsTab(ttk.Frame):
             f"re_stress_budget_on = {v['re_stress_budget_on'].get()}",
             f"re_stress_component = '{v['re_stress_component'].get()}'",
             '',
-            f"body_force_on = {v['body_force_on'].get()}",
-            f"body_force_component = '{v['body_force_component'].get()}'",
-            '',
             f"heat_transf_coeff_on = {v['heat_transf_coeff_on'].get()}",
             f"Nusselt_number_on = {v['Nusselt_number_on'].get()}",
             f"turb_prandtl_on = {v['turb_prandtl_on'].get()}",
@@ -822,19 +847,19 @@ class TurbStatsTab(ttk.Frame):
             f"norm_y_to_y_plus = {v['norm_y_to_y_plus'].get()}",
             f"norm_temp_by_ref_temp = {v['norm_temp_by_ref_temp'].get()}",
             '',
-            f"half_channel_plot = {v['half_channel_plot'].get()}",
+            f"half_channel_plot = {v['channel_plot_mode'].get() == 'half channel'}",
             f"half_channel_side = '{v['half_channel_side'].get()}'",
-            f"linear_y_scale = {v['linear_y_scale'].get()}",
-            f"log_y_scale = {v['log_y_scale'].get()}",
+            f"linear_y_scale = {v['axis_scale'].get() == 'linear'}",
+            f"log_y_scale = {v['axis_scale'].get() == 'log'}",
             f"multi_plot = {v['multi_plot'].get()}",
             'display_fig = False',
-            f"save_fig = {v['save_fig'].get()}",
-            f"save_to_path = {v['save_to_path'].get()}",
+            'save_fig = True',
+            'save_to_path = True',
             f"large_text_on = {v['large_text_on'].get()}",
-            f"plot_name = '{v['plot_name'].get()}'",
             '',
             f"ux_velocity_log_ref_on = {v['ux_velocity_log_ref_on'].get()}",
             f"mhd_NK_ref_on = {v['mhd_NK_ref_on'].get()}",
+            f"mhd_NK_ref_case = '{v['mhd_NK_ref_case'].get()}'",
             f"mkm180_ch_ref_on = {v['mkm180_ch_ref_on'].get()}",
         ]
         try:
@@ -883,7 +908,7 @@ class SliceTab(ttk.Frame):
 
     def _build_controls(self, parent):
         # --- Path section always visible above the scroll area ---
-        path_frame = ttk.LabelFrame(parent, text='Data Path')
+        path_frame = ttk.Labelframe(parent, text='Data Path')
         path_frame.pack(fill='x', padx=4, pady=(4, 0))
 
         self._case_path = tk.StringVar()
@@ -905,7 +930,7 @@ class SliceTab(ttk.Frame):
         f = scroll.inner
 
         def sec(title):
-            lf = ttk.LabelFrame(f, text=title)
+            lf = ttk.Labelframe(f, text=title, padding=(8, 6))
             lf.pack(fill='x', padx=4, pady=3)
             return lf
 
@@ -941,10 +966,8 @@ class SliceTab(ttk.Frame):
 
         # Variables
         s = sec('Variables')
-        self._var_lb = tk.Listbox(s, selectmode='extended', height=8, exportselection=False,
-                                   background=_INPUT_BG, foreground=_FG,
-                                   selectbackground=_SEL_BG, selectforeground=_SEL_FG,
-                                   activestyle='none', relief='flat', borderwidth=0)
+        self._var_lb = ttk.Listbox(s, selectmode='extended', height=8, exportselection=False,
+                                    activestyle='none', relief='flat', borderwidth=0)
         sb2 = ttk.Scrollbar(s, orient='vertical', command=self._var_lb.yview)
         self._var_lb.configure(yscrollcommand=sb2.set)
         self._var_lb.pack(side='left', fill='both', expand=True)
@@ -1316,7 +1339,7 @@ class MonitorPointsTab(ttk.Frame):
         f.pack(fill='both', expand=True, padx=4, pady=4)
 
         # Path
-        s = ttk.LabelFrame(f, text='Data Path')
+        s = ttk.Labelframe(f, text='Data Path')
         s.pack(fill='x', padx=4, pady=3)
         self._path = tk.StringVar()
         r = ttk.Frame(s)
@@ -1327,7 +1350,7 @@ class MonitorPointsTab(ttk.Frame):
                    ).pack(side='left')
 
         # Options
-        s = ttk.LabelFrame(f, text='Options')
+        s = ttk.Labelframe(f, text='Options')
         s.pack(fill='x', padx=4, pady=3)
 
         def spin_row(frame, label, var, lo, hi):
@@ -1364,12 +1387,10 @@ class MonitorPointsTab(ttk.Frame):
         ttk.Button(f, text='Run', command=self._run).pack(fill='x', padx=4, pady=6)
 
         # Figure selector
-        s2 = ttk.LabelFrame(f, text='Figures')
+        s2 = ttk.Labelframe(f, text='Figures')
         s2.pack(fill='both', expand=True, padx=4, pady=3)
-        self._fig_lb = tk.Listbox(s2, height=10, exportselection=False,
-                                   background=_INPUT_BG, foreground=_FG,
-                                   selectbackground=_SEL_BG, selectforeground=_SEL_FG,
-                                   activestyle='none', relief='flat', borderwidth=0)
+        self._fig_lb = ttk.Listbox(s2, height=10, exportselection=False,
+                                    activestyle='none', relief='flat', borderwidth=0)
         sb = ttk.Scrollbar(s2, orient='vertical', command=self._fig_lb.yview)
         self._fig_lb.configure(yscrollcommand=sb.set)
         self._fig_lb.pack(side='left', fill='both', expand=True)
@@ -1685,64 +1706,6 @@ class Visu3DPanel(ttk.Frame):
                                      show_scalar_bar=True)
             self._plotter.add_axes()
 
-        elif mode == 'glyphs':
-            import numpy as np
-            import pyvista as pv
-            grid_pt = grid.cell_data_to_point_data()
-            u = grid_pt.point_data['qx_ccc']
-            v = grid_pt.point_data['qy_ccc']
-            w = grid_pt.point_data['qz_ccc']
-            vel = np.column_stack([u, v, w])
-            grid_pt['velocity'] = vel
-            grid_pt['velocity_magnitude'] = np.linalg.norm(vel, axis=1)
-            every_n = cfg.get('glyph_every_n', 1)
-            indices = np.arange(0, grid_pt.n_points, every_n)
-            sub = pv.PolyData(grid_pt.points[indices])
-            for key in grid_pt.point_data.keys():
-                sub[key] = grid_pt.point_data[key][indices]
-            geom = pv.Arrow() if cfg.get('glyph_type', 'arrow') == 'arrow' else pv.Cone()
-            glyphs = sub.glyph(orient='velocity', scale='velocity_magnitude',
-                               factor=cfg.get('glyph_factor', 0.1), geom=geom)
-            if glyphs.n_points > 0:
-                clim = tv._resolve_clim(cfg, grid_pt.point_data['velocity_magnitude'])
-                self._plotter.add_mesh(glyphs, scalars='velocity_magnitude',
-                                       cmap=cmap, clim=clim, show_scalar_bar=True)
-            self._plotter.add_axes()
-
-        elif mode == 'streamlines':
-            import numpy as np
-            grid_pt = grid.cell_data_to_point_data()
-            u = grid_pt.point_data['qx_ccc']
-            v = grid_pt.point_data['qy_ccc']
-            w = grid_pt.point_data['qz_ccc']
-            vel = np.column_stack([u, v, w])
-            grid_pt['velocity'] = vel
-            grid_pt['velocity_magnitude'] = np.linalg.norm(vel, axis=1)
-            common = dict(
-                n_points=cfg.get('stream_n_seeds', 50),
-                integration_direction=cfg.get('stream_direction', 'both'),
-                max_steps=cfg.get('stream_max_steps', 2000),
-            )
-            if cfg.get('stream_seed') == 'line':
-                streamlines = grid_pt.streamlines(
-                    'velocity',
-                    pointa=cfg['stream_pointa'],
-                    pointb=cfg['stream_pointb'],
-                    **common,
-                )
-            else:
-                streamlines = grid_pt.streamlines(
-                    'velocity',
-                    source_center=cfg['stream_center'],
-                    source_radius=cfg['stream_radius'],
-                    **common,
-                )
-            if streamlines.n_points > 0:
-                clim = tv._resolve_clim(cfg, grid_pt.point_data['velocity_magnitude'])
-                self._plotter.add_mesh(streamlines, scalars='velocity_magnitude',
-                                       cmap=cmap, clim=clim, line_width=2, show_scalar_bar=True)
-            self._plotter.add_axes()
-
         self._plotter.reset_camera()
         if self._hint_id is not None:
             self._canvas.delete(self._hint_id)
@@ -1895,7 +1858,7 @@ class TurbVisuTab(ttk.Frame):
         f = scroll.inner
 
         def sec(title):
-            lf = ttk.LabelFrame(f, text=title)
+            lf = ttk.Labelframe(f, text=title, padding=(8, 6))
             lf.pack(fill='x', padx=4, pady=3)
             return lf
 
@@ -1937,10 +1900,8 @@ class TurbVisuTab(ttk.Frame):
 
         # ---- Variables ----
         s = sec('Variable')
-        self._var_lb = tk.Listbox(
+        self._var_lb = ttk.Listbox(
             s, selectmode='single', height=7, exportselection=False,
-            background=_INPUT_BG, foreground=_FG,
-            selectbackground=_SEL_BG, selectforeground=_SEL_FG,
             activestyle='none', relief='flat', borderwidth=0,
         )
         sb2 = ttk.Scrollbar(s, orient='vertical', command=self._var_lb.yview)
@@ -1970,7 +1931,7 @@ class TurbVisuTab(ttk.Frame):
         self._mode = tk.StringVar(value='slice')
         row(s, 'Mode:', lambda r: ttk.Combobox(
             r, textvariable=self._mode,
-            values=['slice', 'iso', 'volume', 'streamlines', 'glyphs'], state='readonly', width=16).pack(side='left'))
+            values=['slice', 'iso', 'volume'], state='readonly', width=16).pack(side='left'))
 
         self._cmap = tk.StringVar(value='RdBu_r')
         row(s, 'Colormap:', lambda r: ttk.Combobox(
@@ -2024,52 +1985,6 @@ class TurbVisuTab(ttk.Frame):
         row(s, 'Colour vort. comp.:', lambda r: ttk.Combobox(
             r, textvariable=self._color_vort_component, values=['x', 'y', 'z'],
             state='readonly', width=4).pack(side='left'))
-
-        # ---- Streamlines ----
-        s = sec('Streamlines  (requires qx/qy/qz_ccc)')
-        self._stream_seed    = tk.StringVar(value='sphere')
-        self._stream_cx      = tk.StringVar()
-        self._stream_cy      = tk.StringVar()
-        self._stream_cz      = tk.StringVar()
-        self._stream_radius  = tk.StringVar()
-        self._stream_x0      = tk.StringVar()
-        self._stream_y0      = tk.StringVar()
-        self._stream_z0      = tk.StringVar()
-        self._stream_x1      = tk.StringVar()
-        self._stream_y1      = tk.StringVar()
-        self._stream_z1      = tk.StringVar()
-        self._stream_n_seeds = tk.StringVar(value='50')
-        self._stream_steps   = tk.StringVar(value='2000')
-        self._stream_dir     = tk.StringVar(value='both')
-        row(s, 'Seed type:', lambda r: ttk.Combobox(
-            r, textvariable=self._stream_seed,
-            values=['sphere', 'line'], state='readonly', width=10).pack(side='left'))
-        row(s, 'Sphere centre X:', lambda r: ttk.Entry(r, textvariable=self._stream_cx, width=12).pack(side='left'))
-        row(s, '             Y:', lambda r: ttk.Entry(r, textvariable=self._stream_cy, width=12).pack(side='left'))
-        row(s, '             Z:', lambda r: ttk.Entry(r, textvariable=self._stream_cz, width=12).pack(side='left'))
-        row(s, 'Radius (auto):', lambda r: ttk.Entry(r, textvariable=self._stream_radius, width=12).pack(side='left'))
-        row(s, 'Line start  X:', lambda r: ttk.Entry(r, textvariable=self._stream_x0, width=12).pack(side='left'))
-        row(s, '            Y:', lambda r: ttk.Entry(r, textvariable=self._stream_y0, width=12).pack(side='left'))
-        row(s, '            Z:', lambda r: ttk.Entry(r, textvariable=self._stream_z0, width=12).pack(side='left'))
-        row(s, 'Line end    X:', lambda r: ttk.Entry(r, textvariable=self._stream_x1, width=12).pack(side='left'))
-        row(s, '            Y:', lambda r: ttk.Entry(r, textvariable=self._stream_y1, width=12).pack(side='left'))
-        row(s, '            Z:', lambda r: ttk.Entry(r, textvariable=self._stream_z1, width=12).pack(side='left'))
-        row(s, 'N seeds:', lambda r: ttk.Entry(r, textvariable=self._stream_n_seeds, width=8).pack(side='left'))
-        row(s, 'Max steps:', lambda r: ttk.Entry(r, textvariable=self._stream_steps, width=8).pack(side='left'))
-        row(s, 'Direction:', lambda r: ttk.Combobox(
-            r, textvariable=self._stream_dir,
-            values=['both', 'forward', 'backward'], state='readonly', width=12).pack(side='left'))
-
-        # ---- Glyphs ----
-        s = sec('Glyphs  (requires qx/qy/qz_ccc)')
-        self._glyph_factor  = tk.StringVar()
-        self._glyph_every_n = tk.StringVar()
-        self._glyph_type    = tk.StringVar(value='arrow')
-        row(s, 'Scale factor:', lambda r: ttk.Entry(r, textvariable=self._glyph_factor,  width=10).pack(side='left'))
-        row(s, 'Every N pts:', lambda r: ttk.Entry(r, textvariable=self._glyph_every_n, width=10).pack(side='left'))
-        row(s, 'Glyph:', lambda r: ttk.Combobox(
-            r, textvariable=self._glyph_type,
-            values=['arrow', 'cone'], state='readonly', width=10).pack(side='left'))
 
         # ---- Volume rendering ----
         s = sec('Volume Rendering')
@@ -2269,48 +2184,6 @@ class TurbVisuTab(ttk.Frame):
                 **stats,
                 'opacity': self._opacity.get(),
             }
-        elif mode == 'streamlines':
-            try:
-                n_seeds = max(1, int(self._stream_n_seeds.get() or '50'))
-            except ValueError:
-                n_seeds = 50
-            try:
-                max_steps = max(1, int(self._stream_steps.get() or '2000'))
-            except ValueError:
-                max_steps = 2000
-            cfg = {
-                'mode': 'streamlines',
-                'variable': variable,
-                'cmap': cmap,
-                **stats,
-                'stream_seed':      self._stream_seed.get(),
-                'stream_cx':        _parse_float(self._stream_cx.get(), None),
-                'stream_cy':        _parse_float(self._stream_cy.get(), None),
-                'stream_cz':        _parse_float(self._stream_cz.get(), None),
-                'stream_radius':    _parse_float(self._stream_radius.get(), None),
-                'stream_x0':        _parse_float(self._stream_x0.get(), None),
-                'stream_y0':        _parse_float(self._stream_y0.get(), None),
-                'stream_z0':        _parse_float(self._stream_z0.get(), None),
-                'stream_x1':        _parse_float(self._stream_x1.get(), None),
-                'stream_y1':        _parse_float(self._stream_y1.get(), None),
-                'stream_z1':        _parse_float(self._stream_z1.get(), None),
-                'stream_n_seeds':   n_seeds,
-                'stream_max_steps': max_steps,
-                'stream_direction': self._stream_dir.get(),
-            }
-            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
-        else:  # glyphs
-            cfg = {
-                'mode': 'glyphs',
-                'variable': variable,
-                'cmap': cmap,
-                **stats,
-                'glyph_factor':  _parse_float(self._glyph_factor.get(), None),
-                'glyph_every_n': int(self._glyph_every_n.get()) if self._glyph_every_n.get().strip().isdigit() else None,
-                'glyph_type':    self._glyph_type.get(),
-            }
-            selected_vars = list({'qx_ccc', 'qy_ccc', 'qz_ccc'} | set(selected_vars))
-
         var_meta = dict(self._var_meta)
 
         def worker():
@@ -2422,51 +2295,6 @@ class TurbVisuTab(ttk.Frame):
                         cfg['iso_vals'] = [iso_min]
                     self._log(f'  Iso-values: {[f"{v:.4e}" for v in cfg["iso_vals"]]}')
 
-                if mode == 'streamlines':
-                    bounds = grid.bounds  # (xmin,xmax, ymin,ymax, zmin,zmax)
-                    xmid = 0.5 * (bounds[0] + bounds[1])
-                    ymid = 0.5 * (bounds[2] + bounds[3])
-                    zmid = 0.5 * (bounds[4] + bounds[5])
-                    if cfg['stream_seed'] == 'line':
-                        x0 = cfg['stream_x0'] if cfg['stream_x0'] is not None else xmid
-                        y0 = cfg['stream_y0'] if cfg['stream_y0'] is not None else ymid
-                        z0 = cfg['stream_z0'] if cfg['stream_z0'] is not None else bounds[4]
-                        x1 = cfg['stream_x1'] if cfg['stream_x1'] is not None else xmid
-                        y1 = cfg['stream_y1'] if cfg['stream_y1'] is not None else ymid
-                        z1 = cfg['stream_z1'] if cfg['stream_z1'] is not None else bounds[5]
-                        cfg['stream_pointa'] = (x0, y0, z0)
-                        cfg['stream_pointb'] = (x1, y1, z1)
-                        self._log(f'  Line seed: ({x0:.3g},{y0:.3g},{z0:.3g}) → '
-                                  f'({x1:.3g},{y1:.3g},{z1:.3g})')
-                    else:
-                        cx = cfg['stream_cx'] if cfg['stream_cx'] is not None else xmid
-                        cy = cfg['stream_cy'] if cfg['stream_cy'] is not None else ymid
-                        cz = cfg['stream_cz'] if cfg['stream_cz'] is not None else zmid
-                        cfg['stream_center'] = (cx, cy, cz)
-                        if cfg['stream_radius'] is None:
-                            cfg['stream_radius'] = 0.1 * min(
-                                bounds[1] - bounds[0],
-                                bounds[3] - bounds[2],
-                                bounds[5] - bounds[4])
-                        self._log(f'  Sphere seed: centre ({cx:.3g},{cy:.3g},{cz:.3g})  '
-                                  f'radius {cfg["stream_radius"]:.3g}')
-
-                if mode == 'glyphs':
-                    import numpy as _np
-                    if cfg['glyph_every_n'] is None:
-                        cfg['glyph_every_n'] = max(1, grid.n_points // 5000)
-                    if cfg['glyph_factor'] is None:
-                        bounds = grid.bounds
-                        min_dim = min(bounds[1]-bounds[0], bounds[3]-bounds[2], bounds[5]-bounds[4])
-                        grid_pt_tmp = grid.cell_data_to_point_data()
-                        u = grid_pt_tmp.point_data['qx_ccc']
-                        v = grid_pt_tmp.point_data['qy_ccc']
-                        w = grid_pt_tmp.point_data['qz_ccc']
-                        vel_rms = float(_np.sqrt(_np.mean(u**2 + v**2 + w**2)))
-                        cfg['glyph_factor'] = 0.05 * min_dim / max(vel_rms, 1e-12)
-                    self._log(f'  Glyphs: every {cfg["glyph_every_n"]} pts, '
-                              f'factor {cfg["glyph_factor"]:.3g}')
-
                 # Rendering must happen on the main (Tk) thread.
                 self._log('Rendering…')
                 self.after(0, lambda g=grid, c=dict(cfg): self._visu_panel.render(g, c))
@@ -2491,10 +2319,11 @@ class TurbVisuTab(ttk.Frame):
 class App(ttk.Window):
 
     def __init__(self):
-        super().__init__(themename='darkly')
+        super().__init__(theme='pydata-dark')
         self.title('CHAPSim2 Toolkit')
         self.geometry('1400x820')
         self.minsize(920, 600)
+        self.protocol('WM_DELETE_WINDOW', self._on_close)
         self._build()
 
     def _build(self):
@@ -2502,8 +2331,21 @@ class App(ttk.Window):
         nb.pack(fill='both', expand=True)
         nb.add(TurbStatsTab(nb),     text='  Turbulence Statistics  ')
         nb.add(SliceTab(nb),         text='  Slice Visualisation  ')
-        nb.add(TurbVisuTab(nb),      text='  3D Visualisation  ')
+        self._turb_visu_tab = TurbVisuTab(nb)
+        nb.add(self._turb_visu_tab, text='  3D Visualisation  ')
         nb.add(MonitorPointsTab(nb), text='  Monitoring Points  ')
+
+    def _on_close(self):
+        # The PyVista/VTK off-screen plotter holds a GL context that must be
+        # closed explicitly while the display connection is still alive.
+        # Without this, it's only finalized during uncontrolled interpreter
+        # shutdown (after Tk has already destroyed its windows), which can
+        # hang for several seconds tearing down the context against a
+        # display that's already gone — worse still through XWayland.
+        plotter = getattr(self._turb_visu_tab._visu_panel, '_plotter', None)
+        if plotter is not None:
+            plotter.close()
+        self.destroy()
 
 
 if __name__ == '__main__':

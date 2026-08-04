@@ -80,8 +80,6 @@ class Config:
     norm_y_to_y_plus: bool
     norm_temp_by_ref_temp: bool
 
-    slice_label: str
-
     half_channel_plot: bool
     linear_y_scale: bool
     log_y_scale: bool
@@ -129,6 +127,15 @@ class Config:
     lorentz_force_x_on: bool = False
     lorentz_force_y_on: bool = False
     lorentz_force_z_on: bool = False
+
+    # Which Noguchi & Kasagi reference curve mhd_NK_ref_on overlays — applied
+    # to every plotted case, independent of case name (see _plot_reference_data).
+    mhd_NK_ref_case: str = 'Ha_6'
+
+    # 1D streamwise-velocity-fluctuation energy spectrum — see SpectrumComputer.
+    spectrum_on: bool = False
+    spectrum_direction: str = 'z'
+    spectrum_y_coords: str = ''
 
     @classmethod
     def from_module(cls, config_module):
@@ -178,7 +185,6 @@ class Config:
             norm_ux_by_u_tau=getattr(config_module, 'norm_ux_by_u_tau', False),
             norm_y_to_y_plus=getattr(config_module, 'norm_y_to_y_plus', False),
             norm_temp_by_ref_temp=getattr(config_module, 'norm_temp_by_ref_temp', False),
-            slice_label=getattr(config_module, 'slice_label', ''),
             half_channel_plot=getattr(config_module, 'half_channel_plot', False),
             linear_y_scale=getattr(config_module, 'linear_y_scale', True),
             log_y_scale=getattr(config_module, 'log_y_scale', False),
@@ -209,6 +215,10 @@ class Config:
             lorentz_force_x_on=getattr(config_module, 'lorentz_force_x_on', False),
             lorentz_force_y_on=getattr(config_module, 'lorentz_force_y_on', False),
             lorentz_force_z_on=getattr(config_module, 'lorentz_force_z_on', False),
+            mhd_NK_ref_case=getattr(config_module, 'mhd_NK_ref_case', 'Ha_6'),
+            spectrum_on=getattr(config_module, 'spectrum_on', False),
+            spectrum_direction=getattr(config_module, 'spectrum_direction', 'z'),
+            spectrum_y_coords=getattr(config_module, 'spectrum_y_coords', ''),
         )
 
 @dataclass
@@ -395,7 +405,6 @@ def create_data_loader(config: Config, data_types: List[str] = None):
             required_vars=required_vars,
             average_z=config.average_z_direction,
             average_x=config.average_x_direction,
-            slice_label=config.slice_label if config.slice_label else None,
             x_crop=config.x_crop,
             average_over_timesteps=config.average_over_timesteps,
         )
@@ -564,7 +573,7 @@ class TurbulenceXDMFData:
 
     def __init__(self, folder_path: str, cases: List[str], timesteps: List[str],
                  data_types: List[str] = None, average_z: bool = True, average_x: bool = False,
-                 slice_label: str = None, x_crop: str = '', required_vars: Optional[set] = None,
+                 x_crop: str = '', required_vars: Optional[set] = None,
                  average_over_timesteps: bool = False):
         self.folder_path = folder_path
         self.cases = cases
@@ -574,7 +583,6 @@ class TurbulenceXDMFData:
         self.average_z = average_z
         self.average_x = average_x
         self.average_over_timesteps = average_over_timesteps
-        self.slice_label = slice_label
         # Nested structure: {case_timestep: {variable: array}}
         self.data: Dict[str, Dict[str, np.ndarray]] = {}
         self.grid_info: Dict = {}
@@ -625,11 +633,9 @@ class TurbulenceXDMFData:
         """Load XDMF files for a single case and timestep"""
         key = f"{case}_{timestep}"
 
-        # Get file paths for this case/timestep
-        if self.slice_label:
-            file_names = ut.visu_slice_file_paths(self.folder_path, case, timestep, self.slice_label)
-        else:
-            file_names = ut.visu_file_paths(self.folder_path, case, timestep)
+        # Get file paths for this case/timestep — always the fixed 'zi1'
+        # spanwise-average tsp_avg naming (see utils.visu_file_paths).
+        file_names = ut.visu_file_paths(self.folder_path, case, timestep)
 
         # Check which files exist
         existing_files = [f for f in file_names if os.path.isfile(f)]
@@ -751,18 +757,23 @@ class TurbulenceXDMFData:
 class ReferenceData:
     """Manages all reference datasets"""
 
-    # Reference data file paths
-    REF_MKM180_MEANS_PATH = 'Reference_Data/MKM180_profiles/chan180.means'
-    REF_MKM180_REYSTRESS_PATH = 'Reference_Data/MKM180_profiles/chan180.reystress'
+    # Reference data file paths — resolved relative to this file's own
+    # location (not the process's current working directory), since the
+    # GUI can be launched from a different cwd than the repo root and
+    # np.loadtxt would otherwise silently fail to find them.
+    _REF_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'Reference_Data')
+
+    REF_MKM180_MEANS_PATH = os.path.join(_REF_DATA_DIR, 'MKM180_profiles', 'chan180.means')
+    REF_MKM180_REYSTRESS_PATH = os.path.join(_REF_DATA_DIR, 'MKM180_profiles', 'chan180.reystress')
 
     NK_REF_PATHS = {
-        'ref_NK_Ha_6': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_6_turb.txt',
-        'ref_NK_Ha_4': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_4_turb.txt',
-        'ref_NK_uu12_Ha_6': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_6_uv_rms.txt',
-        'ref_NK_uu12_Ha_4': 'Reference_Data/Noguchi&Kasagi_mhd_ref_data/thtlabs_Ha_4_uv_rms.txt',
+        'ref_NK_Ha_6': os.path.join(_REF_DATA_DIR, 'Noguchi&Kasagi_mhd_ref_data', 'thtlabs_Ha_6_turb.txt'),
+        'ref_NK_Ha_4': os.path.join(_REF_DATA_DIR, 'Noguchi&Kasagi_mhd_ref_data', 'thtlabs_Ha_4_turb.txt'),
+        'ref_NK_uu12_Ha_6': os.path.join(_REF_DATA_DIR, 'Noguchi&Kasagi_mhd_ref_data', 'thtlabs_Ha_6_uv_rms.txt'),
+        'ref_NK_uu12_Ha_4': os.path.join(_REF_DATA_DIR, 'Noguchi&Kasagi_mhd_ref_data', 'thtlabs_Ha_4_uv_rms.txt'),
     }
 
-    #REF_XCOMP_HA_6_PATH = 'Reference_Data/XCompact3D_mhd_validation/u_prime_sq.txt'
+    #REF_XCOMP_HA_6_PATH = os.path.join(_REF_DATA_DIR, 'XCompact3D_mhd_validation', 'u_prime_sq.txt')
 
     def __init__(self, config: Config):
         self.config = config
@@ -1832,6 +1843,84 @@ class AnisotropyTerm:
 
 
 # =====================================================================================================================================================
+# SPECTRAL ANALYSIS CLASSES
+# =====================================================================================================================================================
+
+class SpectrumComputer:
+    """
+    1D energy spectrum of the streamwise velocity fluctuation (qx_ccc)
+    along a homogeneous direction (x or z), at one or more wall-normal (y)
+    locations.
+
+    A spectrum needs the raw, unaveraged instantaneous flow field — unlike
+    the other stats in this pipeline, which work from time/space-averaged
+    t_avg/tsp_avg data (already reduced away any spatial structure a
+    spectrum would analyze) — so it loads the instantaneous XDMF file
+    directly instead of going through the shared data_loader.
+
+    raw_results / processed_results: {(case, timestep): {y_value: (k, E)}}
+    — not plain ndarrays, so this is deliberately kept out of
+    TurbulenceStatsPipeline.statistics (process_all's generic per-stat
+    normalization assumes ndarray values).
+    """
+
+    def __init__(self, folder_path: str, direction: str, y_coords_str: str):
+        self.folder_path = folder_path
+        self.direction = direction if direction in ('x', 'z') else 'z'
+        self.y_coords = [float(s) for s in y_coords_str.replace(',', ' ').split() if s.strip()]
+        self.raw_results: Dict[Tuple[str, str], Dict[float, Tuple[np.ndarray, np.ndarray]]] = {}
+        self.processed_results: Dict[Tuple[str, str], Dict[float, Tuple[np.ndarray, np.ndarray]]] = self.raw_results
+
+    def compute_for_case(self, case: str, timestep: str, data_loader=None) -> bool:
+        if not self.y_coords:
+            print("Spectral analysis: no y-coordinates specified; skipping.")
+            return False
+
+        inst_xdmf = ut.visu_file_paths(self.folder_path, case, timestep)[0]
+        if not os.path.isfile(inst_xdmf):
+            print(f"Missing instantaneous flow file for spectral analysis: {case}, {timestep}\n"
+                  f"  Looked for: {inst_xdmf}")
+            return False
+
+        var_meta, grid_info = ut.parse_xdmf_metadata(inst_xdmf)
+        data = ut.load_xdmf_variables(var_meta, ['qx_ccc'], grid_info=grid_info)
+        if not data or 'qx_ccc' not in data:
+            print(f"Failed to load qx_ccc for spectral analysis: {case}, {timestep}")
+            return False
+
+        y_nodes = grid_info.get('grid_y')
+        x_nodes = grid_info.get('grid_x')
+        z_nodes = grid_info.get('grid_z')
+        if y_nodes is None or x_nodes is None or z_nodes is None:
+            print(f"Missing grid coordinates for spectral analysis: {case}, {timestep}")
+            return False
+        y_cell = 0.5 * (y_nodes[:-1] + y_nodes[1:])
+        x_cell = 0.5 * (x_nodes[:-1] + x_nodes[1:])
+        z_cell = 0.5 * (z_nodes[:-1] + z_nodes[1:])
+
+        u = data['qx_ccc']  # (nz, ny, nx)
+        results = {}
+        for y_val in self.y_coords:
+            y_idx = int(np.argmin(np.abs(y_cell - y_val)))
+            plane = u[:, y_idx, :]  # (nz, nx), fixed y
+
+            if self.direction == 'x':
+                signal = plane - plane.mean(axis=1, keepdims=True)  # (nz, nx)
+                dx = float(x_cell[1] - x_cell[0])
+            else:
+                signal = plane.T - plane.T.mean(axis=1, keepdims=True)  # (nx, nz)
+                dx = float(z_cell[1] - z_cell[0])
+
+            k, E = op.compute_1d_spectrum(signal, dx=dx)
+            # Average over the other (batched) homogeneous direction for
+            # statistical convergence of a single-snapshot spectrum.
+            results[float(y_cell[y_idx])] = (k, E.mean(axis=0))
+
+        self.raw_results[(case, timestep)] = results
+        return True
+
+
+# =====================================================================================================================================================
 # PIPELINE CLASS
 # =====================================================================================================================================================
 
@@ -1954,6 +2043,15 @@ class TurbulenceStatsPipeline:
             for _flag, term_name, label in self.anisotropy_computer.enabled_terms:
                 self.statistics.append(AnisotropyTerm(term_name, label, self.anisotropy_computer))
 
+        # Not appended to self.statistics — see SpectrumComputer's docstring.
+        self.spectrum_computer = None
+        if self.config.spectrum_on:
+            self.spectrum_computer = SpectrumComputer(
+                self.config.folder_path,
+                self.config.spectrum_direction,
+                self.config.spectrum_y_coords,
+            )
+
     def compute_all(self) -> None:
         """Compute all registered statistics for all cases and timesteps"""
         # Use the loader's timestep list — it may have been updated (e.g. to ['avg'])
@@ -1968,10 +2066,11 @@ class TurbulenceStatsPipeline:
         n_force = len(self.force_computer.enabled_terms) if self.force_computer else 0
         n_anisotropy = len(self.anisotropy_computer.enabled_terms) if self.anisotropy_computer else 0
         total_tasks = len(regular_stats) * len(self.config.cases) * len(timesteps)
-        # Budget/force/anisotropy: one compute call per case/timestep (covers all terms)
+        # Budget/force/anisotropy/spectrum: one compute call per case/timestep (covers all terms)
         total_tasks += len(self.config.cases) * len(timesteps) if n_budget else 0
         total_tasks += len(self.config.cases) * len(timesteps) if n_force else 0
         total_tasks += len(self.config.cases) * len(timesteps) if n_anisotropy else 0
+        total_tasks += len(self.config.cases) * len(timesteps) if self.spectrum_computer else 0
 
         with tqdm(total=total_tasks, desc="Computing statistics", unit="stat") as pbar:
             # Regular stats
@@ -2000,6 +2099,13 @@ class TurbulenceStatsPipeline:
                 for case in self.config.cases:
                     for timestep in timesteps:
                         self.anisotropy_computer.compute_for_case(case, timestep, self.data_loader)
+                        pbar.update(1)
+
+            # Spectral analysis: one call per case/timestep computes all y-locations
+            if self.spectrum_computer:
+                for case in self.config.cases:
+                    for timestep in timesteps:
+                        self.spectrum_computer.compute_for_case(case, timestep, self.data_loader)
                         pbar.update(1)
 
     def process_all(self) -> None:
@@ -2670,6 +2776,44 @@ class TurbulencePlotter:
 
         return fig
 
+    def plot_spectrum(self, spectrum_computer: Optional[SpectrumComputer]):
+        """1D streamwise-velocity-fluctuation energy spectrum: log-log E(k)
+        vs k, one curve per (case, timestep, y-location).
+
+        Not part of plot_by_class's grouped-statistics machinery — see
+        SpectrumComputer's docstring — so this is called directly by
+        main()/the GUI worker and merged into the same figures dict.
+        """
+        if spectrum_computer is None or not spectrum_computer.processed_results:
+            return None
+
+        self._reset_color_cycle()
+        fig = Figure(figsize=(8, 6), constrained_layout=True)
+        ax = fig.add_subplot(111)
+
+        for (case, timestep), by_y in spectrum_computer.processed_results.items():
+            for y_value, (k, E) in by_y.items():
+                # k[0] = 0 (DC/mean component) can't be shown on a log-log axis.
+                k_plot, E_plot = k[1:], E[1:]
+                suffix = f' y={y_value:.3g}'
+                label = self._build_legend_label(f'{spectrum_computer.direction}-spectrum', case, timestep, suffix)
+                color = self._get_color(f'{case}|{timestep}|{y_value}', 'spectrum')
+                linestyle = self._get_linestyle(case)
+                ax.loglog(k_plot, E_plot, label=label, color=color, linestyle=linestyle)
+
+        direction_label = f'$k_{spectrum_computer.direction}$'
+        ax.set_title(f"Streamwise Velocity Fluctuation Spectrum ({spectrum_computer.direction}-direction)",
+                     fontsize=self._get_title_fontsize())
+        ax.set_xlabel(direction_label, fontsize=self._get_axis_label_fontsize())
+        ax.set_ylabel('$E(k)$', fontsize=self._get_axis_label_fontsize())
+        ax.grid(True, which='both')
+        handles, labels = ax.get_legend_handles_labels()
+        if handles:
+            ax.legend(fontsize=self._get_legend_fontsize())
+        self._apply_axis_text_style(ax)
+
+        return fig
+
     def _plot_single_figure(self, statistics: List[Union[ReStresses, Profiles, Budget]],
                            reference_data: Optional[ReferenceData] = None):
         """Create a single combined plot for all statistics"""
@@ -2947,16 +3091,18 @@ class TurbulencePlotter:
                               f'{self.plot_config.stat_labels[stat_name]} MKM180',
                               'black')
 
-        # Noguchi & Kasagi reference
+        # Noguchi & Kasagi reference — overlays the configured Hartmann-number
+        # curve (mhd_NK_ref_case) for every plotted case, regardless of the
+        # case's own name.
         if self.config.mhd_NK_ref_on:
-            if case == 'Ha_4' and reference_data.NK_H4_stats and stat_name in reference_data.NK_H4_stats:
+            if self.config.mhd_NK_ref_case == 'Ha_4' and reference_data.NK_H4_stats and stat_name in reference_data.NK_H4_stats:
                 ax.plot(reference_data.NK_ref_y_H4,
                         reference_data.NK_H4_stats[stat_name],
                         linestyle='', marker='o',
                         label='Ha = 4, Noguchi & Kasagi',
                         color=self.plot_config.colors_1[stat_name], markevery=2)
 
-            elif case == 'Ha_6' and reference_data.NK_H6_stats and stat_name in reference_data.NK_H6_stats:
+            elif self.config.mhd_NK_ref_case == 'Ha_6' and reference_data.NK_H6_stats and stat_name in reference_data.NK_H6_stats:
                 ax.plot(reference_data.NK_ref_y_H6,
                         reference_data.NK_H6_stats[stat_name],
                         linestyle='', marker='o',
@@ -3135,6 +3281,12 @@ def main():
 
         # Create separate figures for each class
         figures = plotter.plot_by_class(grouped_stats, reference_data)
+
+        # Spectral analysis isn't part of the grouped-statistics machinery
+        # (see SpectrumComputer's docstring) — plotted separately.
+        spectrum_fig = plotter.plot_spectrum(pipeline.spectrum_computer)
+        if spectrum_fig is not None:
+            figures['Spectrum'] = spectrum_fig
 
         if config.save_fig:
             if figures:

@@ -1193,7 +1193,7 @@ def compute_lorentz_force(mag_field_direction, stuart_number, force_dict):
 #     return
 
 # =====================================================================================================================================================
-# Two-point Correlation Analysis
+# Two-point Correlation
 # =====================================================================================================================================================
 
 # =====================================================================================================================================================
@@ -1203,6 +1203,39 @@ def compute_lorentz_force(mag_field_direction, stuart_number, force_dict):
 # =====================================================================================================================================================
 # Spectral Analysis
 # =====================================================================================================================================================
+
+def compute_1d_spectrum(field, dx=1.0):
+    """
+    One-sided 1D power spectral density of a real-valued signal, via FFT
+    along the last axis (a homogeneous spatial direction).
+
+    Uses the real FFT (rfft) since `field` is real-valued, and normalizes
+    so the spectrum sums (Parseval) to the signal's mean-square value:
+        sum(E, axis=-1) ~= mean(field**2, axis=-1)
+
+    Args:
+        field: real array; FFT is taken along the last axis
+        dx: grid spacing along that axis
+
+    Returns:
+        (k, E): wavenumber array (rad/length, one-sided) and the power
+                spectral density, same shape as `field` but with the last
+                axis replaced by len(k) = n//2 + 1.
+    """
+    n = field.shape[-1]
+    fft_vals = np.fft.rfft(field, axis=-1)
+    psd = (np.abs(fft_vals) ** 2) / n ** 2
+
+    # rfft only keeps k >= 0, folding away the (real-signal) negative-
+    # frequency half — double everything except the DC and Nyquist terms
+    # to recover the full signal energy in the one-sided spectrum.
+    if n % 2 == 0:
+        psd[..., 1:-1] *= 2
+    else:
+        psd[..., 1:] *= 2
+
+    k = 2 * np.pi * np.fft.rfftfreq(n, d=dx)
+    return k, psd
 
 # =====================================================================================================================================================
 # Q-Criterion

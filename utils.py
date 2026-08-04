@@ -902,34 +902,6 @@ def find_available_slices(visu_folder, timestep=None):
     return sorted(labels)
 
 
-def visu_slice_file_paths(folder_path, case, timestep, slice_label):
-    """
-    Generate XDMF file paths for 2D slice data.
-
-    Args:
-        folder_path: Base folder path
-        case: Case name
-        timestep: Timestep string
-        slice_label: Slice label (e.g., 'yi8')
-
-    Returns:
-        list of file paths
-    """
-    case_dir = case_path(folder_path, case)
-    file_names = [
-        os.path.join(case_dir, '2_visu', f'domain1_flow_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_t_avg_flow_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_tsp_avg_flow_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_thermo_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_t_avg_thermo_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_tsp_avg_thermo_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_mhd_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_t_avg_mhd_{slice_label}_{timestep}.xdmf'),
-        os.path.join(case_dir, '2_visu', f'domain1_tsp_avg_mhd_{slice_label}_{timestep}.xdmf'),
-    ]
-    return file_names
-
-
 def slice_axis_info(slice_label):
     """
     Get axis labels and grid coordinate keys for a 2D slice.
@@ -1530,7 +1502,8 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
     # Filter to only existing files for accurate progress bar
     existing_files = [f for f in file_names if os.path.isfile(f)]
 
-    # Select which files to load, by priority or explicit data_types
+    # Select which files to load — purely from the caller's explicit
+    # data_types; no guessing between tsp_avg/t_avg/inst tiers.
     if data_types is not None:
         filtered_files = []
         for f in existing_files:
@@ -1550,20 +1523,6 @@ def xdmf_reader_wrapper(file_names, case=None, timestep=None, load_all_vars=None
                         break
         existing_files = filtered_files
         tqdm.write(f"Filtering for data types: {data_types}")
-    else:
-        # Auto-select tier: tsp_avg_zi1 (if average_z) > t_avg > inst
-        tsp_files  = [f for f in existing_files if 'tsp_avg_' in os.path.basename(f)]
-        t_avg_files = [f for f in existing_files if '_t_avg_' in os.path.basename(f)]
-        inst_files  = [f for f in existing_files if 't_avg' not in os.path.basename(f)]
-        if average_z and tsp_files:
-            existing_files = tsp_files
-            tqdm.write("Using tsp_avg_zi1 (pre-z-averaged) files")
-        elif t_avg_files:
-            existing_files = t_avg_files
-            tqdm.write("Using 3D time-averaged files")
-        else:
-            existing_files = inst_files
-            tqdm.write("No time-averaged files found, loading instantaneous files")
 
     for xdmf_file in tqdm(existing_files, desc="Processing XDMF files", unit="file"):
         try:
