@@ -18,6 +18,11 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# Imported at module level rather than lazily like the other tools: it pulls in
+# nothing beyond numpy, and the mesh tab needs its constants while building its
+# widgets.
+import mesh_analysis as ma
+
 
 # =====================================================================================
 # Shared utilities
@@ -2391,11 +2396,609 @@ class TurbVisuTab(ttk.Frame):
             _log_to(self._console, f'Screenshot error: {exc}')
 
 
+class LinkedSlider(ttk.Frame):
+    """A slider and an entry bound to one variable, kept in sync.
+
+    Typing a value outside the slider's range is allowed and leaves the slider
+    pinned at its end stop, so the range is a convenience rather than a limit.
+
+    `step` snaps values dragged on the slider to a multiple of that increment
+    (ttk.Scale, unlike tk.Scale, has no resolution option). Values typed into
+    the entry are left exactly as entered, so the step constrains the slider
+    without limiting what can be set.
+    """
+
+    def __init__(self, parent, label, var, lo, hi, integer=True, step=None,
+                 label_width=15, entry_width=8, on_change=None, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._var = var
+        self._lo, self._hi = lo, hi
+        self._integer = integer
+        self._step = step
+        self._on_change = on_change
+        self._syncing = False
+
+        ttk.Label(self, text=label, width=label_width, anchor='w').pack(side='left')
+        ttk.Entry(self, textvariable=var, width=entry_width).pack(side='right')
+        self._scale = ttk.Scale(self, from_=lo, to=hi, orient='horizontal',
+                                command=self._from_scale)
+        self._scale.pack(side='left', fill='x', expand=True, padx=(0, 6))
+
+        self._push_to_scale()
+        var.trace_add('write', lambda *_: self._from_var())
+
+    def _from_scale(self, value):
+        if self._syncing:
+            return
+        value = float(value)
+        if self._step:
+            # Snap to the step, but never past the ends of the range.
+            value = min(max(round(value / self._step) * self._step, self._lo), self._hi)
+        value = int(round(value)) if self._integer else round(value, 4)
+        if self._current() == value:
+            return
+        self._syncing = True
+        try:
+            self._var.set(value)
+        finally:
+            self._syncing = False
+        if self._on_change:
+            self._on_change()
+
+    def _from_var(self):
+        if self._syncing:
+            return
+        self._push_to_scale()
+        if self._on_change:
+            self._on_change()
+
+    def _current(self):
+        try:
+            return self._var.get()
+        except (tk.TclError, ValueError):
+            return None
+
+    def _push_to_scale(self):
+        value = self._current()
+        if value is None:
+            return
+        self._syncing = True
+        try:
+            self._scale.set(min(max(float(value), self._lo), self._hi))
+        finally:
+            self._syncing = False
+
+
+class MeshAnalysisTab(ttk.Frame):
+    """Interactive pre-run mesh resolution assessment.
+
+    Wraps mesh_analysis.py: the mesh parameters are driven from sliders, the
+    wall-normal grid is rebuilt exactly as the solver builds it, and the
+    resolution report and spacing plot refresh as the values change.
+    """
+
+    # Label -> value for the readonly combos
+    CASES = {'channel': ma.ICASE_CHANNEL, 'pipe': ma.ICASE_PIPE,
+             'annular': ma.ICASE_ANNULAR}
+    ISTRETS = {'uniform': ma.ISTRET_NO, 'two-side clustered': ma.ISTRET_2SIDES,
+               'bottom clustered': ma.ISTRET_BOTTOM, 'top clustered': ma.ISTRET_TOP}
+    MSTRETS = {'3fmd': ma.MSTRET_3FMD, 'tanh': ma.MSTRET_TANH, 'power law': ma.MSTRET_POWL}
+    FLUIDS = {name: idx for idx, name in ma.FLUID_NAMES.items()}
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self._template = None      # text of a loaded input file, for regeneration
+        self._last = None          # (cfg, yp, res) of the most recent successful run
+        self._update_job = None
+        self._building = True
+        self._build_ui()
+        self._building = False
+        self._schedule_update()
+
+    # ------ Layout -------------------------------------------------------------------
+
+    def _build_ui(self):
+        pw = ttk.Panedwindow(self, orient='horizontal')
+        pw.pack(fill='both', expand=True)
+
+        left = ttk.Frame(pw, width=380)
+        left.pack_propagate(False)
+        pw.add(left, weight=0)
+
+        right = ttk.Frame(pw)
+        pw.add(right, weight=1)
+
+        self._build_controls(left)
+
+        # The metrics bar spans the full width above both panes.
+        self._build_metrics(right)
+
+        content = ttk.Panedwindow(right, orient='horizontal')
+        content.pack(fill='both', expand=True)
+
+        plot_pane = ttk.Frame(content)
+        content.add(plot_pane, weight=3)
+        self._build_figure(plot_pane)
+
+        report_pane = ttk.Frame(content)
+        content.add(report_pane, weight=2)
+        ttk.Label(report_pane, text='Resolution report:').pack(anchor='w', padx=4, pady=(4, 0))
+        # hbar=True also sets wrap='none': the report is fixed-width text with
+        # 100-character rules, which would look broken re-wrapped in this pane.
+        self._report = ttk.ScrolledText(
+            report_pane, height=16, state='disabled',
+            hbar=True, font=('Monospace', 8),
+        )
+        self._report.pack(fill='both', expand=True, padx=4, pady=2)
+
+    def _build_figure(self, parent):
+        # A persistent canvas, unlike FigurePanel which rebuilds on every show:
+        # the sliders redraw continuously, so the canvas is created once and
+        # only its contents are replaced.
+        self._fig = Figure(figsize=(6, 7))
+        self._canvas = FigureCanvasTkAgg(self._fig, master=parent)
+        toolbar = NavigationToolbar2Tk(self._canvas, parent)
+        toolbar.update()
+        self._canvas.get_tk_widget().pack(fill='both', expand=True)
+
+    def _build_metrics(self, parent):
+        s = ttk.Frame(parent)
+        s.pack(fill='x', padx=4, pady=(4, 0))
+        self._metrics = {}
+        for i, (key, label) in enumerate([('re_tau', 'Re_tau'), ('dyplus', 'dy+ wall'),
+                                          ('dycentre', 'dy+ centre'),
+                                          ('dxplus', 'dx+'), ('dzplus', 'dz+'),
+                                          ('growth', 'max growth'), ('cells', 'total cells')]):
+            cell = ttk.Frame(s)
+            cell.grid(row=0, column=i, sticky='ew', padx=3)
+            s.columnconfigure(i, weight=1)
+            ttk.Label(cell, text=label, anchor='center',
+                      font=('TkDefaultFont', 8)).pack(fill='x')
+            value = ttk.Label(cell, text='-', anchor='center',
+                              font=('TkDefaultFont', 12, 'bold'))
+            value.pack(fill='x')
+            self._metrics[key] = value
+
+    # ------ Controls (left) ----------------------------------------------------------
+
+    def _build_controls(self, parent):
+        scroller = ScrollableFrame(parent)
+        scroller.pack(fill='both', expand=True)
+        f = scroller.inner
+
+        def combo_row(frame, label, var, values):
+            r = ttk.Frame(frame)
+            r.pack(fill='x', pady=1)
+            ttk.Label(r, text=label, width=15, anchor='w').pack(side='left')
+            c = ttk.Combobox(r, textvariable=var, values=values, state='readonly', width=18)
+            c.pack(side='left', fill='x', expand=True)
+            c.bind('<<ComboboxSelected>>', lambda _e: self._schedule_update())
+            return c
+
+        def entry_row(frame, label, var, width=12):
+            r = ttk.Frame(frame)
+            r.pack(fill='x', pady=1)
+            ttk.Label(r, text=label, width=15, anchor='w').pack(side='left')
+            e = ttk.Entry(r, textvariable=var, width=width)
+            e.pack(side='left', fill='x', expand=True)
+            return e
+
+        def slider_row(frame, label, var, lo, hi, integer=True, step=None):
+            w = LinkedSlider(frame, label, var, lo, hi, integer=integer, step=step,
+                             on_change=self._schedule_update)
+            w.pack(fill='x', pady=2)
+            return w
+
+        # -- Input file --
+        s = ttk.Labelframe(f, text='Input File', padding=(8, 6))
+        s.pack(fill='x', padx=4, pady=3)
+        self._path = tk.StringVar()
+        r = ttk.Frame(s)
+        r.pack(fill='x', pady=1)
+        ttk.Entry(r, textvariable=self._path).pack(side='left', fill='x', expand=True)
+        ttk.Button(r, text='…', width=3, command=self._browse).pack(side='left')
+        r2 = ttk.Frame(s)
+        r2.pack(fill='x', pady=2)
+        ttk.Button(r2, text='Load', command=self._load).pack(side='left', fill='x', expand=True)
+        ttk.Button(r2, text='Generate…', command=self._generate).pack(side='left', fill='x',
+                                                                     expand=True)
+
+        # -- Case and domain --
+        s = ttk.Labelframe(f, text='Case & Domain', padding=(8, 6))
+        s.pack(fill='x', padx=4, pady=3)
+        self._case = tk.StringVar(value='channel')
+        combo_row(s, 'Case:', self._case, list(self.CASES))
+        self._case.trace_add('write', lambda *_: self._on_case_change())
+
+        self._lxx = tk.DoubleVar(value=8.0)
+        slider_row(s, 'Lx:', self._lxx, 1.0, 80.0, integer=False)
+        self._lzz = tk.DoubleVar(value=4.0)
+        self._lzz_slider = slider_row(s, 'Lz:', self._lzz, 1.0, 25.0, integer=False)
+        self._lyb = tk.DoubleVar(value=-1.0)
+        self._lyb_entry = entry_row(s, 'y bottom:', self._lyb)
+        self._lyt = tk.DoubleVar(value=1.0)
+        self._lyt_entry = entry_row(s, 'y top:', self._lyt)
+        self._lyb.trace_add('write', lambda *_: self._schedule_update())
+        self._lyt.trace_add('write', lambda *_: self._schedule_update())
+        self._extent_note = ttk.Label(s, text='', anchor='w', font=('TkDefaultFont', 8))
+        self._extent_note.pack(fill='x', pady=(2, 0))
+
+        # -- Mesh --
+        s = ttk.Labelframe(f, text='Mesh', padding=(8, 6))
+        s.pack(fill='x', padx=4, pady=3)
+        self._ncx = tk.IntVar(value=64)
+        slider_row(s, 'Ncx:', self._ncx, 8, 2048, step=10)
+        self._ncy = tk.IntVar(value=80)
+        slider_row(s, 'Ncy:', self._ncy, 8, 2048, step=10)
+        self._ncz = tk.IntVar(value=64)
+        slider_row(s, 'Ncz:', self._ncz, 8, 2048, step=10)
+        ttk.Label(s, text='Sliders step in 10s; type an exact count in the box.',
+                  anchor='w', font=('TkDefaultFont', 8)).pack(fill='x', pady=(2, 0))
+
+        self._istret = tk.StringVar(value='two-side clustered')
+        combo_row(s, 'Clustering:', self._istret, list(self.ISTRETS))
+        self._mstret = tk.StringVar(value='3fmd')
+        combo_row(s, 'Stretch func.:', self._mstret, list(self.MSTRETS))
+        self._rstret = tk.DoubleVar(value=0.1)
+        slider_row(s, 'Stretch factor:', self._rstret, 0.001, 1.0, integer=False)
+        ttk.Label(s, text='Smaller stretch factor = stronger near-wall clustering.',
+                  anchor='w', font=('TkDefaultFont', 8)).pack(fill='x', pady=(2, 0))
+
+        # -- Flow --
+        s = ttk.Labelframe(f, text='Flow', padding=(8, 6))
+        s.pack(fill='x', padx=4, pady=3)
+        self._ren = tk.DoubleVar(value=5000.0)
+        entry_row(s, 'Reynolds no.:', self._ren)
+        self._dt = tk.StringVar(value='1e-03')
+        entry_row(s, 'Time step dt:', self._dt)
+        self._ren.trace_add('write', lambda *_: self._schedule_update())
+        self._dt.trace_add('write', lambda *_: self._schedule_update())
+
+        # -- Thermo --
+        s = ttk.Labelframe(f, text='Thermal', padding=(8, 6))
+        s.pack(fill='x', padx=4, pady=3)
+        self._thermo = tk.BooleanVar(value=False)
+        ttk.Checkbutton(s, text=' Solve thermal field', variable=self._thermo,
+                        bootstyle='round-toggle',
+                        command=self._schedule_update).pack(anchor='w', pady=1)
+        self._fluid = tk.StringVar(value='lithium')
+        combo_row(s, 'Fluid:', self._fluid, list(self.FLUIDS))
+        self._ref_t0 = tk.DoubleVar(value=570.0)
+        entry_row(s, 'Ref. temp. (K):', self._ref_t0)
+        self._ref_t0.trace_add('write', lambda *_: self._schedule_update())
+
+        # -- MHD --
+        s = ttk.Labelframe(f, text='MHD', padding=(8, 6))
+        s.pack(fill='x', padx=4, pady=3)
+        self._mhd = tk.BooleanVar(value=False)
+        ttk.Checkbutton(s, text=' Solve MHD', variable=self._mhd,
+                        bootstyle='round-toggle',
+                        command=self._schedule_update).pack(anchor='w', pady=1)
+        self._hartmann = tk.DoubleVar(value=30.0)
+        slider_row(s, 'Hartmann no.:', self._hartmann, 1.0, 500.0, integer=False)
+
+        # -- Actions --
+        s = ttk.Frame(f)
+        s.pack(fill='x', padx=4, pady=6)
+        self._auto = tk.BooleanVar(value=True)
+        ttk.Checkbutton(s, text=' Update automatically', variable=self._auto,
+                        bootstyle='round-toggle').pack(anchor='w', pady=2)
+        ttk.Button(s, text='Update', command=self._update).pack(fill='x', pady=2)
+        ttk.Button(s, text='Save Plot…', command=self._save_plot).pack(fill='x', pady=2)
+
+    # ------ Reading the controls -----------------------------------------------------
+
+    def _on_case_change(self):
+        """Grey out the extents the selected case overrides."""
+        case = self.CASES.get(self._case.get(), ma.ICASE_CHANNEL)
+
+        if case == ma.ICASE_CHANNEL:
+            note = 'Channel: y fixed to [-1, 1] by the solver.'
+            lyb_state, lyt_state, lzz_state = 'disabled', 'disabled', 'normal'
+        elif case == ma.ICASE_PIPE:
+            note = 'Pipe: y fixed to [0, 1] and Lz to 2*pi by the solver.'
+            lyb_state, lyt_state, lzz_state = 'disabled', 'disabled', 'disabled'
+        else:
+            note = 'Annular: y top fixed to 1 and Lz to 2*pi; set y bottom (inner radius).'
+            lyb_state, lyt_state, lzz_state = 'normal', 'disabled', 'disabled'
+
+        self._extent_note.configure(text=note)
+        self._lyb_entry.configure(state=lyb_state)
+        self._lyt_entry.configure(state=lyt_state)
+        for child in self._lzz_slider.winfo_children():
+            try:
+                child.configure(state=lzz_state)
+            except tk.TclError:
+                pass
+
+        self._schedule_update()
+
+    def _build_config(self):
+        """Assemble a DomainConfig from the current control values."""
+        fluid = self.FLUIDS.get(self._fluid.get(), 8)
+
+        return ma.DomainConfig.from_values(
+            icase=self.CASES.get(self._case.get(), ma.ICASE_CHANNEL),
+            lxx=float(self._lxx.get()),
+            lyb=float(self._lyb.get()),
+            lyt=float(self._lyt.get()),
+            lzz=float(self._lzz.get()),
+            nc=[int(self._ncx.get()), int(self._ncy.get()), int(self._ncz.get())],
+            istret=self.ISTRETS.get(self._istret.get(), ma.ISTRET_NO),
+            mstret=self.MSTRETS.get(self._mstret.get(), ma.MSTRET_3FMD),
+            rstret=float(self._rstret.get()),
+            ren=float(self._ren.get()),
+            dt=float(str(self._dt.get()).replace('d', 'e')),
+            is_thermo=bool(self._thermo.get()),
+            ifluid=fluid,
+            ref_t0=float(self._ref_t0.get()),
+            is_mhd=bool(self._mhd.get()),
+            hartmann=float(self._hartmann.get()),
+        )
+
+    def _apply_config(self, cfg):
+        """Push a loaded configuration back into the controls."""
+        inverse = {v: k for k, v in self.CASES.items()}
+        self._case.set(inverse.get(cfg.icase, 'channel'))
+        self._lxx.set(round(cfg.lxx, 4))
+        self._lzz.set(round(cfg.lzz, 4))
+        self._lyb.set(round(cfg.lyb, 4))
+        self._lyt.set(round(cfg.lyt, 4))
+        self._ncx.set(cfg.nc[0])
+        self._ncy.set(cfg.nc[1])
+        self._ncz.set(cfg.nc[2])
+        self._istret.set({v: k for k, v in self.ISTRETS.items()}.get(cfg.istret, 'uniform'))
+        self._mstret.set({v: k for k, v in self.MSTRETS.items()}.get(cfg.mstret, '3fmd'))
+        self._rstret.set(round(cfg.rstret, 4))
+        self._ren.set(cfg.ren)
+        self._dt.set(f'{cfg.dt:g}')
+        self._thermo.set(cfg.is_thermo)
+        if cfg.ifluid in ma.FLUID_NAMES:
+            self._fluid.set(ma.FLUID_NAMES[cfg.ifluid])
+        if cfg.ref_t0 is not None:
+            self._ref_t0.set(cfg.ref_t0)
+        self._mhd.set(cfg.is_mhd)
+        if cfg.hartmann:
+            self._hartmann.set(cfg.hartmann)
+
+    # ------ File actions -------------------------------------------------------------
+
+    def _browse(self):
+        p = filedialog.askopenfilename(
+            title='Select input_chapsim.ini',
+            filetypes=[('CHAPSim2 input', '*.ini'), ('All files', '*')])
+        if p:
+            self._path.set(p)
+            self._load()
+
+    def _load(self):
+        path = self._path.get().strip()
+        if not path:
+            messagebox.showwarning('Mesh Analysis', 'Choose an input file first.')
+            return
+        if not os.path.isfile(path):
+            messagebox.showerror('Mesh Analysis', f'File not found:\n{path}')
+            return
+
+        try:
+            with open(path, 'r') as fh:
+                self._template = fh.read()
+            cfg = ma.DomainConfig(ma.parse_input_file(path), path)
+        except Exception as exc:
+            messagebox.showerror('Mesh Analysis', f'Could not read input file:\n{exc}')
+            return
+
+        if not cfg.is_wall_bounded:
+            messagebox.showwarning(
+                'Mesh Analysis',
+                f"Case '{ma.CASE_NAMES.get(cfg.icase, cfg.icase)}' is not wall bounded.\n"
+                'Only channel, pipe and annular cases can be assessed.')
+            return
+
+        self._building = True
+        try:
+            self._apply_config(cfg)
+        finally:
+            self._building = False
+        self._on_case_change()
+
+    def _generate(self):
+        """Write the current settings to an input file."""
+        try:
+            cfg = self._build_config()
+        except (ValueError, tk.TclError) as exc:
+            messagebox.showerror('Mesh Analysis', f'Invalid parameter value:\n{exc}')
+            return
+
+        path = filedialog.asksaveasfilename(
+            title='Write input_chapsim.ini',
+            initialfile='input_chapsim.ini',
+            defaultextension='.ini',
+            filetypes=[('CHAPSim2 input', '*.ini'), ('All files', '*')])
+        if not path:
+            return
+
+        try:
+            ma.write_input_file(cfg, path, template=self._template)
+        except Exception as exc:
+            messagebox.showerror('Mesh Analysis', f'Could not write input file:\n{exc}')
+            return
+
+        self._path.set(path)
+        source = 'loaded file' if self._template else 'built-in channel template'
+        messagebox.showinfo(
+            'Mesh Analysis',
+            f'Input file written to:\n{path}\n\n'
+            f'Based on the {source}; only the mesh, domain, flow, thermal and MHD '
+            'values shown here were changed. Check the remaining sections '
+            '(boundary conditions, io, probes) before running.')
+
+    def _save_plot(self):
+        if self._last is None:
+            messagebox.showwarning('Mesh Analysis', 'Nothing to save yet.')
+            return
+        path = filedialog.asksaveasfilename(
+            title='Save plot', initialfile='mesh_analysis.png', defaultextension='.png',
+            filetypes=[('PNG', '*.png'), ('PDF', '*.pdf'), ('All files', '*')])
+        if not path:
+            return
+        try:
+            self._fig.savefig(path, dpi=300, bbox_inches='tight')
+        except Exception as exc:
+            messagebox.showerror('Mesh Analysis', f'Could not save plot:\n{exc}')
+            return
+        messagebox.showinfo('Mesh Analysis', f'Plot saved to:\n{path}')
+
+    # ------ Update -------------------------------------------------------------------
+
+    def _schedule_update(self):
+        """Debounce updates so dragging a slider does not redraw continuously."""
+        if self._building or not self._auto.get():
+            return
+        if self._update_job is not None:
+            self.after_cancel(self._update_job)
+        self._update_job = self.after(180, self._update)
+
+    def _update(self):
+        self._update_job = None
+        try:
+            cfg = self._build_config()
+        except (ValueError, tk.TclError) as exc:
+            self._set_report(f'Invalid parameter value: {exc}')
+            return
+
+        if cfg.nc[1] < 5:
+            self._set_report('Ncy must be at least 5 to assess the wall-normal grid.')
+            return
+        if cfg.ren <= 0.0:
+            self._set_report('The Reynolds number must be positive.')
+            return
+
+        import contextlib
+        import io as _io
+
+        buffer = _io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buffer):
+                yp, _yc = ma.build_y_grid(cfg)
+                ma.check_y_grid(yp, cfg)
+                res = ma.analyse_spatial_resolution(cfg, yp, _yc)
+                ma.analyse_temporal_resolution(cfg, res)
+        except Exception:
+            self._set_report(f'{buffer.getvalue()}\n\n{traceback.format_exc()}')
+            return
+
+        self._last = (cfg, yp, res)
+        self._sync_derived(cfg)
+        self._set_report(buffer.getvalue())
+        self._update_metrics(cfg, yp, res)
+
+        try:
+            ma.draw_mesh_distribution(self._fig, cfg, yp, res)
+            self._canvas.draw_idle()
+        except Exception:
+            self._set_report(f'{buffer.getvalue()}\n\nPlot error:\n{traceback.format_exc()}')
+
+    def _sync_derived(self, cfg):
+        """Show the values the solver actually derives.
+
+        The case overrides the y extents and, for cylindrical cases, Lz; the
+        even-cell rule can also bump Ncz. Writing them back keeps the controls
+        honest about what will be run.
+        """
+        self._building = True
+        try:
+            for var, value in ((self._lyb, cfg.lyb), (self._lyt, cfg.lyt),
+                               (self._lzz, cfg.lzz)):
+                if abs(var.get() - value) > 1e-12:
+                    var.set(round(value, 6))
+            if self._ncz.get() != cfg.nc[2]:
+                self._ncz.set(cfg.nc[2])
+        except (tk.TclError, ValueError):
+            pass
+        finally:
+            self._building = False
+
+    def _update_metrics(self, cfg, yp, res):
+        """Refresh the headline numbers, colour-coded against the DNS limits."""
+        dy = np.diff(yp)
+        growth = np.maximum(dy[1:] / dy[:-1], dy[:-1] / dy[1:]).max()
+
+        def style(value, limit):
+            """Green within the limit, amber up to 50% over it, red beyond."""
+            if value > 1.5 * limit:
+                return 'danger'
+            return 'warning' if value > limit else 'success'
+
+        def growth_style(value):
+            # Growth is a ratio about 1, so "50% over the limit" does not carry
+            # over — 1.5 x 1.3 would call a ruinous 1.9 acceptable. The solver's
+            # own caution/limit pair is used instead.
+            if value > 1.3:
+                return 'danger'
+            return 'warning' if value > 1.2 else 'success'
+
+        cells = cfg.nc[0] * cfg.nc[1] * cfg.nc[2]
+        # Not res['yplus1'] — for a pipe that is the axis spacing, not the wall.
+        dyplus = ma.wall_dyplus(cfg, res)
+        entries = {
+            're_tau': (f"{res['Re_tau']:.1f}", 'secondary'),
+            'dyplus': (f"{dyplus:.2f}", style(dyplus, ma.DYPLUS_MAX)),
+            # Graded against the DNS rule of thumb, not an apx_prerun_mod limit.
+            'dycentre': (f"{res['yplus2']:.2f}", style(res['yplus2'],
+                                                      ma.DYPLUS_CENTRE_MAX)),
+            'dxplus': (f"{res['dxplus']:.1f}", style(res['dxplus'], ma.DXPLUS_MAX)),
+            'dzplus': (f"{res['dzplus']:.1f}", style(res['dzplus'], ma.DZPLUS_MAX)),
+            'growth': (f"{growth:.3f}", growth_style(growth)),
+            'cells': (f"{cells / 1e6:.2f}M" if cells >= 1e6 else f"{cells:,}", 'secondary'),
+        }
+        for key, (text, bootstyle) in entries.items():
+            self._metrics[key].configure(text=text, bootstyle=bootstyle)
+
+    def _set_report(self, text):
+        self._report.configure(state='normal')
+        self._report.delete('1.0', tk.END)
+        self._report.insert(tk.END, text)
+        self._report.see('1.0')
+        self._report.configure(state='disabled')
+
+
 # =====================================================================================
 # APPLICATION
 # =====================================================================================
 
+class LazyTab(ttk.Frame):
+    """Notebook page whose contents are built the first time it is shown.
+
+    Building all five tabs up front dominated startup, and most of that work
+    was for pages the user may never open. The page is registered with the
+    notebook immediately, so tab order and labels are unaffected, but the tab
+    class is not instantiated until the page is first selected.
+    """
+
+    def __init__(self, parent, factory, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._factory = factory
+        self.inner = None
+
+    def realise(self):
+        """Build the page if it has not been built yet."""
+        if self.inner is None:
+            self.inner = self._factory(self)
+            self.inner.pack(fill='both', expand=True)
+
+        return self.inner
+
+
 class App(ttk.Window):
+
+    TABS = [
+        ('  Mesh Analysis  ',         lambda: MeshAnalysisTab),
+        ('  Monitoring Points  ',     lambda: MonitorPointsTab),
+        ('  Slice Visualisation  ',   lambda: SliceTab),
+        ('  3D Visualisation  ',      lambda: TurbVisuTab),
+        ('  Turbulence Statistics  ', lambda: TurbStatsTab),
+    ]
 
     def __init__(self):
         super().__init__(theme='pydata-dark')
@@ -2408,11 +3011,40 @@ class App(ttk.Window):
     def _build(self):
         nb = ttk.Notebook(self)
         nb.pack(fill='both', expand=True)
-        nb.add(TurbStatsTab(nb),     text='  Turbulence Statistics  ')
-        nb.add(SliceTab(nb),         text='  Slice Visualisation  ')
-        self._turb_visu_tab = TurbVisuTab(nb)
-        nb.add(self._turb_visu_tab, text='  3D Visualisation  ')
-        nb.add(MonitorPointsTab(nb), text='  Monitoring Points  ')
+        self._nb = nb
+        self._holders = []
+
+        for text, factory in self.TABS:
+            holder = LazyTab(nb, lambda parent, f=factory: f()(parent))
+            nb.add(holder, text=text)
+            self._holders.append(holder)
+
+        nb.bind('<<NotebookTabChanged>>', self._on_tab_changed)
+        # The event above may already have fired for the initial selection
+        # while the binding was not yet in place, so realise it explicitly.
+        self._realise_current()
+
+    def _on_tab_changed(self, _event=None):
+        self._realise_current()
+
+    def _realise_current(self):
+        """Build the selected page, showing a busy cursor while it happens."""
+        try:
+            holder = self._nb.nametowidget(self._nb.select())
+        except (tk.TclError, KeyError):
+            return
+        if not isinstance(holder, LazyTab) or holder.inner is not None:
+            return
+
+        self.configure(cursor='watch')
+        try:
+            self.update_idletasks()
+        except tk.TclError:
+            pass
+        try:
+            holder.realise()
+        finally:
+            self.configure(cursor='')
 
     def _on_close(self):
         # The PyVista/VTK off-screen plotter holds a GL context that must be
@@ -2421,9 +3053,13 @@ class App(ttk.Window):
         # shutdown (after Tk has already destroyed its windows), which can
         # hang for several seconds tearing down the context against a
         # display that's already gone — worse still through XWayland.
-        plotter = getattr(self._turb_visu_tab._visu_panel, '_plotter', None)
-        if plotter is not None:
-            plotter.close()
+        # With lazy tabs the 3D page may never have been built, in which case
+        # there is no context to close.
+        for holder in self._holders:
+            if isinstance(holder.inner, TurbVisuTab):
+                plotter = getattr(holder.inner._visu_panel, '_plotter', None)
+                if plotter is not None:
+                    plotter.close()
         self.destroy()
 
 
