@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 # ====================================================================================================================================================
 
@@ -204,6 +205,97 @@ def get_viscosity_Pa_s(fluid, T):
     else:
         return fluid.viscosity(T)  # Already in Pa·s
 
+def generate_normalized_property_table(fluid, T_ref, delta_T, n_points=20):
+    """
+    Map the change in thermophysical properties across a temperature range,
+    each non-dimensionalised by its own value at the reference temperature.
+
+    Temperature ranges from T_ref to T_ref + delta_T, so every property
+    column starts at 1.0 (its value at T_ref) — useful for seeing which
+    properties vary most strongly (and whether a constant-property
+    assumption is reasonable) over the temperature difference applied at
+    a thermal boundary condition.
+
+    Parameters:
+    -----------
+    fluid : object
+        Fluid properties object (e.g. from get_fluid_properties()).
+    T_ref : float
+        Reference temperature in K — the T=0 point for the normalisation.
+    delta_T : float
+        Temperature difference in K to map over.
+    n_points : int
+        Number of temperature points.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        Temperature and non-dimensional temperature columns, plus each
+        property normalised by its value at T_ref.
+    """
+    T_array = np.linspace(T_ref, T_ref + delta_T, n_points)
+
+    properties = {
+        'Density': fluid.density_mass,
+        'Viscosity': lambda T: get_viscosity_Pa_s(fluid, T),
+        'Thermal Conductivity': fluid.thermal_conductivity,
+        'Specific Heat (Cp)': fluid.heat_capacity_p,
+        'Volumetric Expansion': fluid.coeff_vol_exp,
+        'Prandtl Number': lambda T: get_prandtl(T, fluid),
+    }
+    if hasattr(fluid, 'electrical_conductivity'):
+        properties['Electrical Conductivity'] = fluid.electrical_conductivity
+
+    data = {
+        'Temperature (K)': T_array,
+        'Non-dim Temperature': T_array / T_ref,
+    }
+    for name, func in properties.items():
+        ref_value = func(T_ref)
+        data[f'{name} (normalised)'] = [func(T) / ref_value for T in T_array]
+
+    return pd.DataFrame(data)
+
+def plot_normalized_properties(df, fluid_name='Fluid', save_fig=False, filename='normalized_properties.png'):
+    """
+    Plot non-dimensionalised property variation across a mapped temperature range.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        Output of generate_normalized_property_table().
+    fluid_name : str
+        Fluid name for the plot title.
+    save_fig : bool
+        Whether to save the figure to disk.
+    filename : str
+        Output filename if save_fig=True.
+
+    Returns:
+    --------
+    matplotlib.figure.Figure
+    """
+    prop_cols = [c for c in df.columns if c.endswith('(normalised)')]
+
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for col in prop_cols:
+        ax.plot(df['Non-dim Temperature'], df[col], marker='o', markersize=3,
+                label=col.replace(' (normalised)', ''))
+
+    ax.axhline(1.0, color='grey', linestyle='--', linewidth=1)
+    ax.set_xlabel(r'Non-dimensional temperature, $T / T_{ref}$')
+    ax.set_ylabel(r'Property / Property at $T_{ref}$')
+    ax.set_title(f'Normalised thermophysical property variation — {fluid_name}')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+
+    if save_fig:
+        fig.savefig(filename, dpi=150)
+        print(f"Plot saved to {filename}")
+
+    return fig
+
 FLUID_NAMES = {
     LiquidLithiumProperties: "Liquid Lithium (Li)",
     LiquidSodiumProperties: "Liquid Sodium (Na)",
@@ -334,6 +426,15 @@ def interactive_calculation():
     #print(f"  Fourier number (Fo):       {Fo:.6e}")
 
     print("\n" + "=" * 70 + "\n")
+
+    map_input = input("Map normalised property variation over this temperature "
+                       "difference? (y/n): ").strip().lower()
+    if map_input == 'y':
+        medium_name = FLUID_NAMES.get(type(fluid), "Unknown Fluid")
+        prop_df = generate_normalized_property_table(fluid, T_ref, delta_T)
+        print(f"\n{prop_df.to_string(index=False)}\n")
+        plot_normalized_properties(prop_df, fluid_name=medium_name)
+        plt.show()
 
     return {
         'grashof': grashof,

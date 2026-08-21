@@ -230,6 +230,11 @@ class LiquidLithiumProperties:
         """Coefficient of volume expansion in 1/K"""
         return 1 / ( 5620 - T )
 
+    def electrical_conductivity(self, T):
+        """Electrical resistivity (Temp in celsius): resist./ohm m = 16.476 x 10-8 + 4.303 x 10^-10T, - 2.297 x 10^-13 T^2 """
+        T_c = T - 273.15
+        return 1 / (16.476 * 10**-8 + 4.303 * 10**-10 * T_c - 2.297 * 10**-13 * T_c**2)
+    
 class LiquidPbLiProperties:
     """
     Thermophysical properties of liquid PbLi (Pb-17Li eutectic alloy).

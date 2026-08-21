@@ -227,9 +227,6 @@ class PlotConfig:
 
     colors_1: Dict[str, str] = None
     colors_2: Dict[str, str] = None
-    colors_3: Dict[str, str] = None
-    colors_4: Dict[str, str] = None
-    colors_blck: Dict[str, str] = None
     stat_labels: Dict[str, str] = None
     budget_colors: Dict[str, str] = None
     visible_palette: List[str] = None
@@ -259,42 +256,6 @@ class PlotConfig:
                 'v_prime_w_prime': "#bf19c5",
             }
 
-        if self.colors_3 is None:
-            self.colors_3 = {
-                'ux_velocity': '#332288',
-                'uy_velocity': '#44aa99',
-                'uz_velocity': '#ddcc77',
-                'u_prime_sq': '#882255',
-                'u_prime_v_prime': '#117733',
-                'w_prime_sq': '#004488',
-                'v_prime_sq': "#c25309",
-                'v_prime_w_prime': "#bf19c5",
-            }
-
-        if self.colors_4 is None:
-            self.colors_4 = {
-                'ux_velocity': '#c51b7d',
-                'uy_velocity': '#1b9e77',
-                'uz_velocity': '#a6611a',
-                'u_prime_sq': '#a6611a',
-                'u_prime_v_prime': '#1b9e77',
-                'w_prime_sq': '#0c7c59',
-                'v_prime_sq': '#5e3c99',
-                'v_prime_w_prime': "#bf19c5",
-            }
-
-        if self.colors_blck is None:
-            self.colors_blck = {
-                'ux_velocity': 'black',
-                'uy_velocity': 'black',
-                'uz_velocity': 'black',
-                'u_prime_sq': 'black',
-                'u_prime_v_prime': 'black',
-                'w_prime_sq': 'black',
-                'v_prime_sq': 'black',
-                'v_prime_w_prime': 'black',
-            }
-
         if self.budget_colors is None:
             self.budget_colors = {
                 'production': '#d62728',
@@ -313,11 +274,18 @@ class PlotConfig:
             }
 
         if self.visible_palette is None:
+            # 40 mutually-distinct, saturated colours (not pastels) — large
+            # enough that realistic figures (many cases/x-coordinates/stats)
+            # don't wrap around and repeat a colour on two different series.
             self.visible_palette = [
                 '#1f77b4', '#d62728', '#2ca02c', '#9467bd', '#ff7f0e',
                 '#8c564b', '#e41a1c', '#377eb8', '#4daf4a', '#984ea3',
                 '#332288', '#117733', '#882255', '#44aa99', '#aa4499',
-                '#88ccee', '#ddcc77', '#cc6677', '#661100', '#0c7c59'
+                '#88ccee', '#ddcc77', '#cc6677', '#661100', '#0c7c59',
+                '#e6194b', '#f58231', '#ffe119', '#bcf60c', '#3cb44b',
+                '#46f0f0', '#4363d8', '#911eb4', '#f032e6', '#808000',
+                '#000075', '#800000', '#9a6324', '#008080', '#ff1493',
+                '#20b2aa', '#556b2f', '#ff4500', '#6a5acd', '#2f4f4f',
             ]
 
         if self.stat_labels is None:
@@ -347,15 +315,6 @@ class PlotConfig:
                 "buoyancy_force": "Buoyancy Force",
                 "lorentz_force": "Lorentz Force",
             }
-
-    @property
-    def colours(self):
-        """Returns tuple of all color schemes"""
-        return (self.colors_1, self.colors_2, self.colors_3, self.colors_4, self.colors_blck)
-    @property
-    def colours_ref(self):
-        """Returns tuple of all color schemes with black first for plotting a reference"""
-        return (self.colors_blck, self.colors_1, self.colors_2, self.colors_3, self.colors_4)
 
 # =====================================================================================================================================================
 # DATA LOADING & MANAGEMENT
@@ -2250,11 +2209,43 @@ class TurbulencePlotter:
         }
         self._series_color_map: Dict[str, str] = {}
         self._next_color_index = 0
+        self._suffix_colors: Optional[Dict[str, str]] = None
 
     def _reset_color_cycle(self) -> None:
         """Reset per-figure colour assignment so lines are distinct within each plot."""
         self._series_color_map = {}
         self._next_color_index = 0
+
+    def _get_line_color(self, case: str, timestep: str, stat_name: Optional[str], suffix: str) -> str:
+        """Colour for one plotted profile line.
+
+        Priority: a fixed budget-term colour (consistent across every plot)
+        > a colour shared by every case/stat at the same x-coordinate slice
+        (consistent across every figure) > a colour unique to this
+        case/timestep/stat (fresh each figure).
+        """
+        budget_colors = self.plot_config.budget_colors
+        if stat_name and stat_name in budget_colors:
+            return budget_colors[stat_name]
+        if suffix:
+            return self._get_suffix_color(suffix)
+        return self._get_color(f'{case}|{timestep}|{stat_name}|{suffix}', stat_name)
+
+    def _get_suffix_color(self, suffix: str) -> str:
+        """Colour for a slice-coordinate suffix (e.g. ' x=2'), taken from a
+        fixed position in a qualitative colormap indexed by the sorted list
+        of requested slice coordinates — so it's bounded by the (small,
+        known) number of distinct x-coordinates rather than a running
+        counter, and is the same everywhere that x-coordinate is plotted.
+        """
+        if self._suffix_colors is None:
+            slices = sorted(self._get_slice_indices(), key=lambda pair: pair[1])
+            cmap = mpl.colormaps['tab20']
+            self._suffix_colors = {
+                f' x={xv:.3g}': mcolors.to_hex(cmap(i % cmap.N))
+                for i, (_idx, xv) in enumerate(slices)
+            }
+        return self._suffix_colors.get(suffix, self.plot_config.visible_palette[0])
 
     def _format_case_label(self, case: str) -> str:
         """Return a human-readable case label."""
@@ -2544,7 +2535,7 @@ class TurbulencePlotter:
 
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
-                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                    color = self._get_line_color(case, timestep, stat.name, suffix)
                     label = self._build_legend_label(stat.label, case, timestep, suffix)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
@@ -2592,7 +2583,7 @@ class TurbulencePlotter:
                     if stat.name == 'balance':
                         self._plot_line(ax, y_plus, profile, label, color='black', linestyle='--')
                     else:
-                        color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                        color = self._get_line_color(case, timestep, stat.name, suffix)
                         linestyle = self._get_linestyle(case)
                         marker = self._get_marker(case)
                         self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
@@ -2626,7 +2617,7 @@ class TurbulencePlotter:
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
                     label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
-                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                    color = self._get_line_color(case, timestep, stat.name, suffix)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
                     self._plot_line(ax, y_plus, profile, label, color, linestyle=linestyle, marker=marker)
@@ -2830,7 +2821,7 @@ class TurbulencePlotter:
 
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
-                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                    color = self._get_line_color(case, timestep, stat.name, suffix)
                     label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
@@ -2890,7 +2881,7 @@ class TurbulencePlotter:
                 profiles = self._extract_profiles(values)
                 for suffix, profile in profiles:
                     # Get plotting aesthetics
-                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                    color = self._get_line_color(case, timestep, stat.name, suffix)
                     label = self._build_legend_label(stat.label, case, timestep, suffix)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
@@ -3011,7 +3002,7 @@ class TurbulencePlotter:
             for (case, timestep), values in stat.processed_results.items():
                 profiles = self._extract_x_profiles(values, stat=stat)
                 for suffix, profile in profiles:
-                    color = self._get_color(f'{case}|{timestep}|{stat.name}|{suffix}', stat.name)
+                    color = self._get_line_color(case, timestep, stat.name, suffix)
                     label = self._build_legend_label(stat.label, case, timestep, suffix)
                     linestyle = self._get_linestyle(case)
                     marker = self._get_marker(case)
