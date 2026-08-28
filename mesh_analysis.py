@@ -1129,7 +1129,7 @@ def print_spatial_report(cfg, yp, res):
 # ====================================================================================================================================================
 
 
-def analyse_temporal_resolution(cfg, res):
+def analyse_temporal_resolution(cfg, res, diff=None):
     """
     Estimate time-step limits and iteration counts for the current mesh.
 
@@ -1141,6 +1141,10 @@ def analyse_temporal_resolution(cfg, res):
     cfg : DomainConfig
     res : dict
         Output of `analyse_spatial_resolution`.
+    diff : dict, optional
+        Output of `analyse_diffusion_number`. When given, the diffusion numbers
+        are reported alongside the other time-step limits, which is where they
+        belong: they bound dt for the same reason.
     """
     Re_tau = res['Re_tau']
 
@@ -1152,7 +1156,7 @@ def analyse_temporal_resolution(cfg, res):
     dt_min = min(dt_max_cfl1, dt_max_cfl2, dt_max_phy)
 
     print('\n' + '-' * 100)
-    print('Temporal Resolution (based on isothermal flow)')
+    print('Temporal Resolution (based on isothermal/ constant property flow)')
     print('-' * 100)
     print(f"  Current dt                      : {cfg.dt:14.6e}")
     print(f"  dt_max (convection CFL)         : {dt_max_cfl1:14.6e}")
@@ -1164,7 +1168,10 @@ def analyse_temporal_resolution(cfg, res):
         print(f"\n  ! Warning: current dt exceeds the smallest limit "
               f"({dt_min:.6e}).")
     else:
-        print('\n  + Current dt is within all estimated limits')
+        print('\n  + Current dt is within all isothermal estimated limits')
+
+    if diff is not None:
+        print_diffusion_block(cfg, diff)
 
     if cfg.dt <= 0.0:
         return
@@ -1187,6 +1194,213 @@ def analyse_temporal_resolution(cfg, res):
     print('\n  Note: statistics can start from any iteration when using running-average')
     print('  post-processing. Otherwise, allow the following before starting statistics:')
     print(f"  Recommended 6 flow-throughs before stats : {nt_cur * 6:14,d}")
+
+
+# ====================================================================================================================================================
+# Diffusion number (Check_cfl_diffusion, src/tools_solver.f90)
+# ====================================================================================================================================================
+
+
+def _mapping_derivative(n, kind, cfg):
+    """
+    d(eta)/dy at the requested points, i.e. yMappingpt/yMappingcc column 1.
+
+    Reproduces the `mp(:, 1)` expressions in the `Buildup_grid_mapping_1D_*`
+    routines (src/geometry.f90).
+
+    Parameters
+    ----------
+    n : int
+        Number of points.
+    kind : {'nd', 'cl'}
+        Nodes or cell centres.
+    cfg : DomainConfig
+
+    Returns
+    -------
+    numpy.ndarray
+        d(eta)/dy at each point.
+    """
+    if not cfg.is_stretching:
+        return np.ones(n)
+
+    eta = _eta(n, kind)
+    span = cfg.lyt - cfg.lyb
+
+    if cfg.mstret == MSTRET_3FMD:
+        if cfg.istret == ISTRET_2SIDES:
+            gamma, delta = 1.0, 0.5
+        elif cfg.istret == ISTRET_BOTTOM:
+            gamma, delta = 0.5, 0.5
+        elif cfg.istret == ISTRET_TOP:
+            gamma, delta = 0.5, 0.0
+        else:
+            gamma, delta = 1.0, 0.0
+        beta = cfg.rstret
+        alpha = (-1.0 + np.sqrt(1.0 + 4.0 * np.pi**2 * beta**2)) / beta * 0.5
+        mm = np.pi * (gamma * eta + delta)
+        return (alpha / np.pi + np.sin(mm)**2 / np.pi / beta) / span
+
+    if cfg.mstret == MSTRET_TANH:
+        beta = cfg.rstret * 20.0
+        if cfg.istret == ISTRET_2SIDES:
+            mm = np.tanh(beta * 0.5)
+            mp = 2.0 * mm / beta * np.cosh(beta * (eta - 0.5))**2
+            ff = span / 2.0
+        else:
+            mm = np.tanh(beta)
+            arg = beta * (1.0 - eta) if cfg.istret == ISTRET_BOTTOM else beta * eta
+            mp = mm / beta * np.cosh(arg)**2
+            ff = span
+        return mp / ff
+
+    if cfg.mstret == MSTRET_POWL:
+        beta = cfg.rstret
+        expo = 1.0 / beta
+        with np.errstate(divide='ignore', invalid='ignore'):
+            if cfg.istret == ISTRET_2SIDES:
+                mp = np.where(eta <= 0.5,
+                              expo * (2.0 * eta)**(expo - 1.0),
+                              expo * (2.0 * (1.0 - eta))**(expo - 1.0))
+            elif cfg.istret == ISTRET_BOTTOM:
+                mp = expo * eta**(expo - 1.0)
+            else:
+                mp = expo * (1.0 - eta)**(expo - 1.0)
+            # The solver replaces a vanishing derivative with 1 before inverting.
+            mp = np.where(np.abs(mp) < MINP, 1.0, 1.0 / mp)
+        return mp / span
+
+    raise ValueError(f"Unsupported stretching method: {cfg.mstret}")
+
+
+def cell_inv_dy(cfg):
+    """
+    1/dy at each cell centre, as the solver forms it.
+
+    `Check_cfl_diffusion` uses `yMappingcc(j, 1) / h(2)` on a stretched grid,
+    where h(2) is the uniform computational spacing, and the plain 1/h(2) of
+    the physical spacing otherwise.
+
+    Parameters
+    ----------
+    cfg : DomainConfig
+
+    Returns
+    -------
+    numpy.ndarray
+        1/dy for each of the Ncy cells.
+    """
+    n_cell = cfg.nc[1]
+
+    if not cfg.is_stretching:
+        h2 = (cfg.lyt - cfg.lyb) / n_cell
+        return np.full(n_cell, 1.0 / h2)
+
+    h2 = 1.0 / n_cell   # computational spacing
+    return _mapping_derivative(n_cell, 'cl', cfg) / h2
+
+
+def analyse_diffusion_number(cfg, yc, verbose=False):
+    """
+    Diffusion (von Neumann) numbers and the time steps that would bound them.
+
+    Port of `Check_cfl_diffusion` (src/tools_solver.f90), which the solver runs
+    each step on the live field. Before a run the transport properties are not
+    known, so the reference state is assumed throughout: the dynamic viscosity
+    and thermal conductivity are 1 in the solver's non-dimensionalisation. For
+    an isothermal case that is exactly what the solver computes; for a heated
+    case the true numbers scale with the local property ratios.
+
+    Parameters
+    ----------
+    cfg : DomainConfig
+    yc : numpy.ndarray
+        Cell-centre wall-normal coordinates.
+    verbose : bool
+        Print the report.
+
+    Returns
+    -------
+    dict
+        Diffusion numbers, limiting time steps and where the maximum occurs.
+    """
+    rsp1 = 1.0 / cfg.hx**2
+    rsp2 = cell_inv_dy(cfg)**2
+
+    rsp3 = np.full(cfg.nc[1], 1.0 / cfg.hz**2)
+    if cfg.icoordinate == ICYLINDRICAL:
+        # rci = 1/yc: the azimuthal arc length collapses towards the axis
+        rsp3 = rsp3 / yc**2
+
+    rdxyz2 = rsp1 + rsp2 + rsp3
+    j_max = int(np.argmax(rdxyz2))
+    rmax = float(rdxyz2[j_max])
+
+    rre = 1.0 / cfg.ren
+    diff_mom = rmax * 2.0 * cfg.dt * rre
+    dt_max_mom = 1.0 / (2.0 * rre * rmax)
+
+    Pr, pr_source = (reference_prandtl_number(cfg) if cfg.is_thermo else (None, ''))
+    diff_ene = dt_max_ene = None
+    if cfg.is_thermo and Pr is not None:
+        r_pr_ren = rre / Pr
+        diff_ene = rmax * 2.0 * cfg.dt * r_pr_ren
+        dt_max_ene = 1.0 / (2.0 * r_pr_ren * rmax)
+
+    res = {
+        'rdxyz2_max': rmax, 'j_max': j_max,
+        'contrib_x': rsp1, 'contrib_y': float(rsp2[j_max]), 'contrib_z': float(rsp3[j_max]),
+        'diff_mom': diff_mom, 'dt_max_mom': dt_max_mom,
+        'diff_ene': diff_ene, 'dt_max_ene': dt_max_ene,
+        'Pr': Pr, 'pr_source': pr_source,
+    }
+
+    if verbose:
+        print_diffusion_block(cfg, res)
+
+    return res
+
+
+def print_diffusion_block(cfg, res):
+    """
+    Print the diffusion numbers as part of the temporal resolution section.
+
+    Parameters
+    ----------
+    cfg : DomainConfig
+    res : dict
+        Output of `analyse_diffusion_number`.
+    """
+    print('\n  Diffusion numbers (constant properties):')
+    print(f"  max(1/dx^2+1/dy^2+1/dz^2)     : {res['rdxyz2_max']:14.6e}  "
+          f"  (cell j = {res['j_max'] + 1} of {cfg.nc[1]})")
+    print(f"  contributions x | y | z       : {res['contrib_x']:.4e} | "
+          f"{res['contrib_y']:.4e} | {res['contrib_z']:.4e}")
+    print(f"  Momentum diffusion number     : {res['diff_mom']:14.6e}")
+    print(f"  dt_max (momentum diffusion)   : {res['dt_max_mom']:14.6e}")
+    if res['diff_mom'] > 1.0:
+        print('    ! Warning: momentum diffusion number is larger than 1. '
+              'Numerical instability could occur.')
+        print(f"      Reduce dt below {res['dt_max_mom']:.6e}, or coarsen the mesh.")
+
+    if cfg.is_thermo:
+        if res['diff_ene'] is not None:
+            print(f"  Energy diffusion number       : {res['diff_ene']:14.6e}")
+            print(f"  dt_max (energy diffusion)     : {res['dt_max_ene']:14.6e}  "
+                  f"(Pr = {res['Pr']:.6g}, {res['pr_source']})")
+            if res['diff_ene'] > 1.0:
+                print('    ! Warning: energy diffusion number is larger than 1. '
+                      'Numerical instability could occur.')
+                print(f"      Reduce dt below {res['dt_max_ene']:.6e}, or coarsen the mesh.")
+        else:
+            print(f"    Energy diffusion number       : unavailable "
+                  f"({res['pr_source']})")
+
+    print('\n  Note: evaluated at the reference state, where the non-dimensional')
+    print('  viscosity and conductivity are 1; the solver uses the live fields.')
+    if cfg.icoordinate == ICYLINDRICAL:
+        print('    In cylindrical coordinates the azimuthal term 1/(r*dtheta)^2 grows')
+        print('    sharply towards the axis, so the innermost cells usually set this limit.')
 
 
 # ====================================================================================================================================================
@@ -1326,7 +1540,8 @@ def main():
     check_y_grid(yp, cfg)
 
     res = analyse_spatial_resolution(cfg, yp, yc)
-    analyse_temporal_resolution(cfg, res)
+    diff = analyse_diffusion_number(cfg, yc)
+    analyse_temporal_resolution(cfg, res, diff)
 
     print('\n' + '=' * 100)
 
