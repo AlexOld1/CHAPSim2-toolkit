@@ -98,6 +98,9 @@ class Config:
     body_force_on: bool = False
     body_force_component: str = '1'
 
+    # Peak (wall-normal max) TKE and components vs x — see PeakTKE / PeakReynoldsStressuu*.
+    tke_peak_growth_on: bool = False
+
     # Vorticity profiles — see MeanVorticity / VorticityFluctuationRMS.
     mean_vorticity_on: bool = False
     vorticity_on: bool = False
@@ -200,6 +203,7 @@ class Config:
             xdmf_data_type=getattr(config_module, 'xdmf_data_type', 'tsp_avg'),
             body_force_on=getattr(config_module, 'body_force_on', False),
             body_force_component=getattr(config_module, 'body_force_component', '1'),
+            tke_peak_growth_on=getattr(config_module, 'tke_peak_growth_on', False),
             mean_vorticity_on=getattr(config_module, 'mean_vorticity_on', False),
             vorticity_on=getattr(config_module, 'vorticity_on', False),
             vorticity_component=getattr(config_module, 'vorticity_component', 'z'),
@@ -339,7 +343,8 @@ def create_data_loader(config: Config, data_types: List[str] = None):
                              config.v_prime_sq_on or config.v_prime_w_prime_on or
                              config.w_prime_sq_on or config.tke_on or config.vorticity_on or
                              config.reynolds_anisotropy_on or config.vorticity_anisotropy_on or
-                             config.j1_rms_on or config.j2_rms_on or config.j3_rms_on)
+                             config.j1_rms_on or config.j2_rms_on or config.j3_rms_on or
+                             config.tke_peak_growth_on)
         re_stress_budget_enabled = config.re_stress_budget_on
 
         # Build data_types from what is actually enabled so we don't try
@@ -411,7 +416,7 @@ def _build_required_xdmf_vars(config: Config) -> Optional[set]:
         required.update({'u2', 'u3', 'uu23'})
     if config.w_prime_sq_on:
         required.update({'u3', 'uu33'})
-    if config.tke_on:
+    if config.tke_on or config.tke_peak_growth_on:
         required.update({'u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'})
     if config.coeff_friction_on:
         required.add('u1')
@@ -929,6 +934,50 @@ class TurbulentKineticEnergy(Profiles):
         return op.compute_tke(u_prime_sq, v_prime_sq, w_prime_sq)
 
 
+class PeakGrowth(Profiles):
+    """Base for 'peak value at each x' statistics: the wall-normal maximum
+    of a quantity, plotted against x to show how it progresses down the
+    channel. All subclasses are grouped into one combined figure regardless
+    of which family (Profiles/ReStresses) the equivalent non-peak statistic
+    belongs to — see TurbulenceStatsPipeline.get_statistics_by_class.
+    """
+
+    def __init__(self, name: str, label: str, required_quantities: List[str]):
+        super().__init__(name, label, required_quantities)
+        self.x_profile_only = True
+
+
+class PeakTKE(PeakGrowth):
+    """Peak (wall-normal maximum) TKE at each streamwise location."""
+
+    def __init__(self):
+        super().__init__('tke_peak', 'Max. k', ['u1', 'u2', 'u3', 'uu11', 'uu22', 'uu33'])
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        u_prime_sq = op.compute_normal_stress(data_dict['u1'], data_dict['uu11'])
+        v_prime_sq = op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
+        w_prime_sq = op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
+        tke = op.compute_tke(u_prime_sq, v_prime_sq, w_prime_sq)
+        return op.compute_peak_over_y(tke)
+
+
+class PeakReynoldsStress(PeakGrowth):
+    """Peak (wall-normal maximum) Reynolds normal stress component at each
+    streamwise location — one class parameterized by which velocity/stress
+    fields to use, instantiated once per component (u'u', v'v', w'w').
+    """
+
+    def __init__(self, name: str, label: str, velocity_key: str, stress_key: str):
+        super().__init__(f'{name}_max', f'Max. {label}', [velocity_key, stress_key])
+        self._velocity_key = velocity_key
+        self._stress_key = stress_key
+
+    def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
+        return op.compute_peak_over_y(
+            op.compute_normal_stress(data_dict[self._velocity_key], data_dict[self._stress_key])
+        )
+
+
 class MeanVorticity(Profiles):
     """Mean vorticity profile: curl of the time-averaged velocity field
     (u1, u2, u3), via op.compute_vorticity.
@@ -1400,7 +1449,7 @@ class ReynoldsStressuu22(ReStresses):
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         return op.compute_normal_stress(data_dict['u2'], data_dict['uu22'])
-    
+
 
 class ReynoldsStressuu23(ReStresses):
     """Reynolds Stress v'w'"""
@@ -1420,6 +1469,7 @@ class ReynoldsStressuu33(ReStresses):
 
     def compute(self, data_dict: Dict[str, np.ndarray]) -> np.ndarray:
         return op.compute_normal_stress(data_dict['u3'], data_dict['uu33'])
+
 
 # =====================================================================================================================================================
 # REYNOLDS STRESS BUDGET CLASSES
@@ -1921,6 +1971,12 @@ class TurbulenceStatsPipeline:
         if self.config.tke_on:
             self.statistics.append(TurbulentKineticEnergy())
 
+        if self.config.tke_peak_growth_on:
+            self.statistics.append(PeakTKE())
+            self.statistics.append(PeakReynoldsStress('u_prime_sq', "<u'u'>", 'u1', 'uu11'))
+            self.statistics.append(PeakReynoldsStress('v_prime_sq', "<v'v'>", 'u2', 'uu22'))
+            self.statistics.append(PeakReynoldsStress('w_prime_sq', "<w'w'>", 'u3', 'uu33'))
+
         if self.config.temp_on:
             self.statistics.append(Temperature(self.config.norm_temp_by_ref_temp, self.config.ref_temp, self.config.cases))
 
@@ -2160,6 +2216,7 @@ class TurbulenceStatsPipeline:
             'TkeBudget': [],
             'BodyForce': [],
             'Anisotropy': [],
+            'PeakGrowth': [],
         }
         for stat in self.statistics:
             if isinstance(stat, BudgetTerm):
@@ -2169,6 +2226,8 @@ class TurbulenceStatsPipeline:
                 grouped['BodyForce'].append(stat)
             elif isinstance(stat, AnisotropyTerm):
                 grouped['Anisotropy'].append(stat)
+            elif isinstance(stat, PeakGrowth):
+                grouped['PeakGrowth'].append(stat)
             elif isinstance(stat, ReStresses):
                 grouped['ReStresses'].append(stat)
             elif isinstance(stat, Profiles):
@@ -2232,19 +2291,25 @@ class TurbulencePlotter:
         return self._get_color(f'{case}|{timestep}|{stat_name}|{suffix}', stat_name)
 
     def _get_suffix_color(self, suffix: str) -> str:
-        """Colour for a slice-coordinate suffix (e.g. ' x=2'), taken from a
-        fixed position in a qualitative colormap indexed by the sorted list
-        of requested slice coordinates — so it's bounded by the (small,
-        known) number of distinct x-coordinates rather than a running
-        counter, and is the same everywhere that x-coordinate is plotted.
+        """Colour for a slice-coordinate suffix (e.g. ' x=2' from a y-profile
+        sliced at x-locations, or ' y=0.5' from an x-profile sliced at
+        y-locations), taken from a fixed position in a qualitative colormap
+        indexed by the sorted list of requested slice coordinates — so it's
+        bounded by the (small, known) number of distinct coordinates rather
+        than a running counter, and is the same everywhere that coordinate
+        is plotted. x-profiles and y-profiles are never shown in the same
+        figure, so both index from the start of the colormap independently
+        (slice #1 looks the same colour in either direction).
         """
         if self._suffix_colors is None:
-            slices = sorted(self._get_slice_indices(), key=lambda pair: pair[1])
+            x_slices = sorted(self._get_slice_indices(), key=lambda pair: pair[1])
+            y_slices = sorted(self._get_x_profile_y_indices(), key=lambda pair: pair[1])
             cmap = mpl.colormaps['tab20']
-            self._suffix_colors = {
-                f' x={xv:.3g}': mcolors.to_hex(cmap(i % cmap.N))
-                for i, (_idx, xv) in enumerate(slices)
-            }
+            self._suffix_colors = {}
+            for i, (_idx, xv) in enumerate(x_slices):
+                self._suffix_colors[f' x={xv:.3g}'] = mcolors.to_hex(cmap(i % cmap.N))
+            for i, (_idx, yv) in enumerate(y_slices):
+                self._suffix_colors[f' y={yv:.3g}'] = mcolors.to_hex(cmap(i % cmap.N))
         return self._suffix_colors.get(suffix, self.plot_config.visible_palette[0])
 
     def _format_case_label(self, case: str) -> str:
@@ -2452,6 +2517,7 @@ class TurbulencePlotter:
             'ReStressBudget': 'TKE Budget',
             'BodyForce': 'Body Force Analysis',
             'Anisotropy': 'Anisotropy (Lumley Triangle)',
+            'PeakGrowth': 'Peak Turbulent Kinetic Energy Growth',
         }
 
         for class_name, stats_list in grouped_statistics.items():
@@ -2990,6 +3056,12 @@ class TurbulencePlotter:
         if not stats_with_x_profiles:
             return None
 
+        # PeakGrowth stats (peak TKE + its normal-stress components) share
+        # units, so they're more useful overlaid on one set of axes than
+        # split into separate subplots.
+        if all(isinstance(s, PeakGrowth) for s in stats_with_x_profiles):
+            return self._plot_x_profile_single_figure(stats_with_x_profiles, title, x_coords)
+
         n_stats = len(stats_with_x_profiles)
         ncols = math.ceil(math.sqrt(n_stats))
         nrows = math.ceil(n_stats / ncols)
@@ -3032,6 +3104,45 @@ class TurbulencePlotter:
         for i in range(n_stats, nrows * ncols):
             axs[i // ncols, i % ncols].set_visible(False)
 
+        return fig
+
+    def _plot_x_profile_single_figure(self, statistics, title: str, x_coords):
+        """Plot every statistic's x-profile together on one shared set of axes."""
+        fig = Figure(figsize=(10, 6))
+        ax = fig.add_subplot(111)
+
+        for stat in statistics:
+            for (case, timestep), values in stat.processed_results.items():
+                profiles = self._extract_x_profiles(values, stat=stat)
+                for suffix, profile in profiles:
+                    color = self._get_line_color(case, timestep, stat.name, suffix)
+                    label = self._build_legend_label(stat.label, case, timestep, suffix, include_stat_label=True)
+                    linestyle = self._get_linestyle(case)
+                    marker = self._get_marker(case)
+                    markevery = self._get_markevery(len(x_coords))
+                    ax.plot(
+                        x_coords,
+                        profile,
+                        label=label,
+                        color=color,
+                        linestyle=linestyle,
+                        marker=marker,
+                        markersize=4,
+                        markevery=markevery
+                    )
+
+        ax.set_title(title, fontsize=self._get_title_fontsize())
+        ax.set_xlabel('$x$', fontsize=self._get_axis_label_fontsize())
+        if len(statistics) == 1:
+            ax.set_ylabel(self._get_stat_ylabel(statistics[0].name, statistics[0].label),
+                          fontsize=self._get_axis_label_fontsize())
+        elif self.config.norm_by_u_tau_sq:
+            ax.set_ylabel('$E_k$ / $u_\\tau^2$', fontsize=self._get_axis_label_fontsize())
+        else:
+            ax.set_ylabel('$E_k$', fontsize=self._get_axis_label_fontsize())
+        ax.grid(True)
+        ax.legend(fontsize=self._get_legend_fontsize())
+        self._apply_axis_text_style(ax)
         return fig
 
     def _plot_line(self, ax, x: np.ndarray, y: np.ndarray, label: str, color: str,

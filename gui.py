@@ -433,6 +433,7 @@ class TurbStatsTab(ttk.Frame):
         crow(s, 'Vorticity component', sv('vorticity_component', 'z'), ['x', 'y', 'z'])
 
         s = sec('Advanced Statistics')
+        chk(s, "Peak TKE growth", bv('tke_peak_growth_on', False))
         chk(s, 'Reynolds-stress anisotropy (Lumley triangle)', bv('reynolds_anisotropy_on', False))
         chk(s, 'Vorticity anisotropy (Lumley triangle, requires full 3D field)', bv('vorticity_anisotropy_on', False))
         chk(s, 'Reynolds Stress Budget terms', bv('re_stress_budget_on', False))
@@ -635,6 +636,7 @@ class TurbStatsTab(ttk.Frame):
             turb_prandtl_on=v['turb_prandtl_on'].get(),
             coeff_friction_on=v['coeff_friction_on'].get(),
             tke_on=v['tke_on'].get(),
+            tke_peak_growth_on=v['tke_peak_growth_on'].get(),
             profile_direction=v['profile_direction'].get(),
             slice_coords=v['slice_coords'].get(),
             x_crop=v['x_crop'].get(),
@@ -781,7 +783,7 @@ class TurbStatsTab(ttk.Frame):
                 'average_x_direction': False, 'average_z_direction': True,
                 'average_over_timesteps': False,
                 'ux_velocity_on': True, 'uy_velocity_on': False, 'uz_velocity_on': False,
-                'temp_on': False, 'tke_on': False, 'coeff_friction_on': False,
+                'temp_on': False, 'tke_on': False, 'tke_peak_growth_on': False, 'coeff_friction_on': False,
                 'mean_vorticity_on': False, 'vorticity_on': False,
                 'reynolds_anisotropy_on': False, 'vorticity_anisotropy_on': False,
                 'u_prime_sq_on': False, 'u_prime_v_prime_on': False,
@@ -890,6 +892,7 @@ class TurbStatsTab(ttk.Frame):
             f"uz_velocity_on = {v['uz_velocity_on'].get()}",
             f"temp_on = {v['temp_on'].get()}",
             f"tke_on = {v['tke_on'].get()}",
+            f"tke_peak_growth_on = {v['tke_peak_growth_on'].get()}",
             f"coeff_friction_on = {v['coeff_friction_on'].get()}",
             f"mean_vorticity_on = {v['mean_vorticity_on'].get()}",
             f"vorticity_on = {v['vorticity_on'].get()}",

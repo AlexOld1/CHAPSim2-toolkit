@@ -309,6 +309,18 @@ def compute_shear_stress(ux, uy, uv):
 def compute_tke(u_prime_sq, v_prime_sq, w_prime_sq):
     return 0.5 * (u_prime_sq + v_prime_sq + w_prime_sq)
 
+def compute_peak_over_y(field):
+    """Reduce a (y,x) or (y,x,z) field to its wall-normal peak at each x.
+
+    3-D input is averaged over z first (matching the z-averaging convention
+    used elsewhere for x-profile-only statistics), then the maximum over y
+    is taken at each x — showing how a peak value progresses down the channel.
+    """
+    arr = np.asarray(field)
+    if arr.ndim == 3:
+        arr = arr.mean(axis=2)
+    return arr.max(axis=0)
+
 def compute_wall_friction_coeff(tau_w, ref_rho=1.0, ref_bulk_velocity=1.0):
     return tau_w / (0.5 * ref_rho * ref_bulk_velocity**2)
 
