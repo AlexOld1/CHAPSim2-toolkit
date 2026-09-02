@@ -2551,7 +2551,8 @@ class MeshAnalysisTab(ttk.Frame):
         for i, (key, label) in enumerate([('re_tau', 'Re_tau'), ('dyplus', 'dy+ wall'),
                                           ('dycentre', 'dy+ centre'),
                                           ('dxplus', 'dx+'), ('dzplus', 'dz+'),
-                                          ('growth', 'max growth'), ('cells', 'total cells')]):
+                                          ('growth', 'max growth'), ('diffnum', 'diff. number'),
+                                          ('cells', 'total cells')]):
             cell = ttk.Frame(s)
             cell.grid(row=0, column=i, sticky='ew', padx=3)
             s.columnconfigure(i, weight=1)
@@ -2886,7 +2887,8 @@ class MeshAnalysisTab(ttk.Frame):
                 yp, _yc = ma.build_y_grid(cfg)
                 ma.check_y_grid(yp, cfg)
                 res = ma.analyse_spatial_resolution(cfg, yp, _yc)
-                ma.analyse_temporal_resolution(cfg, res)
+                diff = ma.analyse_diffusion_number(cfg, _yc)
+                ma.analyse_temporal_resolution(cfg, res, diff)
         except Exception:
             self._set_report(f'{buffer.getvalue()}\n\n{traceback.format_exc()}')
             return
@@ -2894,7 +2896,7 @@ class MeshAnalysisTab(ttk.Frame):
         self._last = (cfg, yp, res)
         self._sync_derived(cfg)
         self._set_report(buffer.getvalue())
-        self._update_metrics(cfg, yp, res)
+        self._update_metrics(cfg, yp, res, diff)
 
         try:
             ma.draw_mesh_distribution(self._fig, cfg, yp, res)
@@ -2922,7 +2924,7 @@ class MeshAnalysisTab(ttk.Frame):
         finally:
             self._building = False
 
-    def _update_metrics(self, cfg, yp, res):
+    def _update_metrics(self, cfg, yp, res, diff=None):
         """Refresh the headline numbers, colour-coded against the DNS limits."""
         dy = np.diff(yp)
         growth = np.maximum(dy[1:] / dy[:-1], dy[:-1] / dy[1:]).max()
@@ -2953,6 +2955,9 @@ class MeshAnalysisTab(ttk.Frame):
             'dxplus': (f"{res['dxplus']:.1f}", style(res['dxplus'], ma.DXPLUS_MAX)),
             'dzplus': (f"{res['dzplus']:.1f}", style(res['dzplus'], ma.DZPLUS_MAX)),
             'growth': (f"{growth:.3f}", growth_style(growth)),
+            # Above 1 the solver warns of possible instability, so 1 is the limit.
+            'diffnum': ((f"{diff['diff_mom']:.3g}", style(diff['diff_mom'], 1.0))
+                        if diff else ('-', 'secondary')),
             'cells': (f"{cells / 1e6:.2f}M" if cells >= 1e6 else f"{cells:,}", 'secondary'),
         }
         for key, (text, bootstyle) in entries.items():
